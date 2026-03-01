@@ -1,0 +1,8 @@
+numpy>=1.23
+torch>=2.1
+tqdm>=4.66
+matplotlib>=3.7
+Pillow>=10.0
+trimesh>=4.0
+scikit-image>=0.22
+scipy>=1.10

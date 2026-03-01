@@ -1,0 +1,17 @@
+﻿# Dataset
+/data/
+
+# Model outputs and generated artifacts
+/outputs/
+
+# Python virtual environment
+/.venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
