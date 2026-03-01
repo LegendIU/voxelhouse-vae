@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import csv
@@ -12,24 +12,7 @@ from torch.utils.data import DataLoader, get_worker_info
 
 from dataset import VoxelNPZDataset
 from model_3d import VAE3D, kl_divergence
-from utils import ensure_dir, save_json
-
-
-def compute_iou(pred_logits: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> float:
-    p = (torch.sigmoid(pred_logits) > threshold).float()
-    t = (target > 0.5).float()
-    inter = (p * t).sum(dim=(1, 2, 3, 4))
-    union = ((p + t) > 0).float().sum(dim=(1, 2, 3, 4)).clamp_min(1.0)
-    return float((inter / union).mean().item())
-
-
-def dice_loss_from_logits(logits: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    p = torch.sigmoid(logits)
-    t = (target > 0.5).float()
-    num = 2.0 * (p * t).sum(dim=(1, 2, 3, 4)) + eps
-    den = (p + t).sum(dim=(1, 2, 3, 4)) + eps
-    dice = 1.0 - (num / den)
-    return dice.mean()
+from utils import ensure_dir, save_json, choose_device, compute_iou, dice_loss_from_logits
 
 
 @torch.no_grad()
@@ -73,13 +56,6 @@ def seed_worker(worker_id: int) -> None:
     info = get_worker_info()
     if info is not None and hasattr(info.dataset, "rng"):
         info.dataset.rng = np.random.default_rng(worker_seed)
-
-
-def choose_device(device_arg: str) -> torch.device:
-    if device_arg.startswith("cuda") and not torch.cuda.is_available():
-        print(f"[WARN] CUDA device '{device_arg}' requested but CUDA is unavailable, falling back to CPU")
-        return torch.device("cpu")
-    return torch.device(device_arg)
 
 
 def validate_args(args: argparse.Namespace) -> None:

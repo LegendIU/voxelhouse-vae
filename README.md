@@ -1,4 +1,4 @@
-﻿# voxelhouse-vae
+# voxelhouse-vae
 
 3D VAE pipeline for house-shape reconstruction and sampling from voxel occupancy grids.
 
@@ -92,3 +92,32 @@ python src/infer_3d.py \
 ```
 
 For posterior/interpolation modes, also pass `--data_root` and `--split`.
+
+## Running scripts
+
+Run all commands from the **project root** so that `src` modules (e.g. `dataset`, `model_3d`, `utils`) resolve correctly:
+
+```bash
+cd /path/to/voxelhouse-vae
+python src/train_3d_vae.py ...
+```
+
+## Development
+
+Run tests and lint in an isolated environment (venv or Docker).
+
+**Using venv (from project root):**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+PYTHONPATH=src pytest tests/ -v
+ruff check src/
+```
+
+CI runs tests and ruff on every push/PR (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+
+## Improvements
+
+See [IMPROVEMENTS.md](IMPROVEMENTS.md) for analysis and suggested enhancements (DRY refactors, early stopping, tests, reproducibility).

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
 from model_3d import VAE3D
+from utils import choose_device
 
 # --- marching cubes backend (prefer skimage, fallback to trimesh) ---
 def mc_vertices_faces(occ: np.ndarray):
@@ -146,7 +147,7 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
+    device = choose_device(args.device)
 
     ckpt = torch.load(args.ckpt, map_location="cpu")
     cfg = ckpt.get("config", {})

@@ -1,5 +1,9 @@
 from __future__ import annotations
-import argparse, os, random
+
+import argparse
+import os
+import random
+
 import numpy as np
 from tqdm import tqdm
 from utils import ensure_dir, save_json
