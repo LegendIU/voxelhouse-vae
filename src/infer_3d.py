@@ -1,8 +1,12 @@
 import os
 import argparse
+import json
 import numpy as np
 import torch
-from PIL import Image
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 from model_3d import VAE3D
 
@@ -39,7 +43,9 @@ def export_mesh_from_occ(occ: np.ndarray, out_path: str):
     write_obj(out_path, verts, faces)
     return True
 
-def render_projections(occ: np.ndarray) -> Image.Image:
+def render_projections(occ: np.ndarray) -> "Image.Image":
+    from PIL import Image
+
     # occ: (D,H,W) bool/0-1
     # XY: max over Z, XZ: max over Y, YZ: max over X
     xy = occ.max(axis=0)
@@ -62,6 +68,8 @@ def render_projections(occ: np.ndarray) -> Image.Image:
     return out
 
 def save_grid(images, out_path: str, cols: int = 8):
+    from PIL import Image
+
     if len(images) == 0:
         return
     cols = min(cols, len(images))
@@ -76,18 +84,25 @@ def save_grid(images, out_path: str, cols: int = 8):
 
 def load_npz_voxels(data_root: str, split: str) -> torch.Tensor:
     path = os.path.join(data_root, f"{split}.npz")
-    npz = np.load(path)
-    # try common keys
-    key = None
-    for k in ["voxels", "x", "data", "arr_0"]:
-        if k in npz:
-            key = k
-            break
-    if key is None:
-        key = npz.files[0]
-    v = npz[key]  # (N,D,H,W) or (N,1,D,H,W)
+    try:
+        npz = np.load(path, allow_pickle=False)
+    except ValueError:
+        npz = np.load(path, allow_pickle=True)
+
+    with npz:
+        # try common keys
+        key = None
+        for k in ["voxels", "x", "data", "arr_0"]:
+            if k in npz:
+                key = k
+                break
+        if key is None:
+            key = npz.files[0]
+        v = np.asarray(npz[key])  # (N,D,H,W) or (N,1,D,H,W)
     if v.ndim == 4:
         v = v[:, None, ...]
+    if v.ndim != 5:
+        raise ValueError(f"Expected voxel tensor with 4 or 5 dims, got shape {v.shape} from {path}")
     v = v.astype(np.float32)
     return torch.from_numpy(v)
 
@@ -100,6 +115,7 @@ def main():
     ap.add_argument("--n_meshes", type=int, default=32)
     ap.add_argument("--threshold", type=float, default=0.55)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--seed", type=int, default=42)
 
     # NEW sampling modes
     ap.add_argument("--sample_mode", type=str, default="prior",
@@ -110,12 +126,25 @@ def main():
     ap.add_argument("--interp_steps", type=int, default=12)
 
     args = ap.parse_args()
+    if args.n_samples <= 0:
+        raise SystemExit("--n_samples must be > 0")
+    if args.n_meshes < 0:
+        raise SystemExit("--n_meshes must be >= 0")
+    if not (0.0 < args.threshold < 1.0):
+        raise SystemExit("--threshold must be in (0, 1)")
+    if args.sample_mode == "interpolate" and args.interp_steps < 2:
+        raise SystemExit("--interp_steps must be >= 2 for interpolate mode")
 
     os.makedirs(args.out_dir, exist_ok=True)
     proj_dir = os.path.join(args.out_dir, "projections")
     mesh_dir = os.path.join(args.out_dir, "meshes")
     os.makedirs(proj_dir, exist_ok=True)
     os.makedirs(mesh_dir, exist_ok=True)
+
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
 
@@ -124,7 +153,7 @@ def main():
 
     resolution = int(cfg.get("resolution", 64))
     latent_dim = int(cfg.get("latent_dim", 128))
-    base_ch = int(cfg.get("base_ch", 56))
+    base_ch = int(cfg.get("base_ch", 48))
 
     model = VAE3D(resolution=resolution, latent_dim=latent_dim, base_ch=base_ch).to(device)
     model.load_state_dict(ckpt["model"])
@@ -140,6 +169,8 @@ def main():
 
         vox = load_npz_voxels(args.data_root, args.split)  # (N,1,D,H,W)
         N = vox.shape[0]
+        if N == 0:
+            raise SystemExit(f"No samples found in split '{args.split}' at {args.data_root}")
         need = max(args.n_samples, 2)
         idx = torch.randint(0, N, (need,))
         x = vox[idx].to(device)
@@ -179,6 +210,19 @@ def main():
             saved += 1
 
     print(f"Saved grid + {saved} meshes to {os.path.abspath(args.out_dir)} (mode={args.sample_mode})")
+
+    meta = {
+        "sample_mode": args.sample_mode,
+        "n_generated": int(occ.shape[0]),
+        "n_meshes_saved": int(saved),
+        "threshold": float(args.threshold),
+        "seed": int(args.seed),
+        "resolution": int(resolution),
+        "latent_dim": int(latent_dim),
+        "base_ch": int(base_ch),
+    }
+    with open(os.path.join(args.out_dir, "inference_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
 
 if __name__ == "__main__":
     main()

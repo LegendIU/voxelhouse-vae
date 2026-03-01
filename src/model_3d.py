@@ -19,7 +19,10 @@ class ResBlock3D(nn.Module):
 class VAE3D(nn.Module):
     def __init__(self, resolution: int = 64, latent_dim: int = 128, base_ch: int = 48):
         super().__init__()
-        assert resolution in (32, 64)
+        if resolution not in (32, 64):
+            raise ValueError(f"resolution must be 32 or 64, got {resolution}")
+        if base_ch % 8 != 0:
+            raise ValueError(f"base_ch must be divisible by 8 for GroupNorm, got {base_ch}")
         self.resolution = resolution
         self.latent_dim = latent_dim
 

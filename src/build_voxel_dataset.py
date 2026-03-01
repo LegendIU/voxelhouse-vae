@@ -2,9 +2,11 @@ from __future__ import annotations
 import argparse, os, random
 import numpy as np
 from tqdm import tqdm
-import trimesh
-from scipy.ndimage import binary_fill_holes, label
 from utils import ensure_dir, save_json
+
+trimesh = None
+binary_fill_holes = None
+label = None
 
 def normalize_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     mesh = mesh.copy()
@@ -52,6 +54,18 @@ def list_meshes(mesh_dir: str):
     out.sort()
     return out
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.resolution <= 0:
+        raise SystemExit("--resolution must be > 0")
+    if args.max_models < 0:
+        raise SystemExit("--max_models must be >= 0")
+    if not (0.0 < args.train_frac < 1.0):
+        raise SystemExit("--train_frac must be in (0, 1)")
+    if not (0.0 <= args.val_frac < 1.0):
+        raise SystemExit("--val_frac must be in [0, 1)")
+    if args.train_frac + args.val_frac >= 1.0:
+        raise SystemExit("--train_frac + --val_frac must be < 1")
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--mesh_dir", required=True)
@@ -63,7 +77,24 @@ def main():
     p.add_argument("--val_frac", type=float, default=0.1)
     p.add_argument("--fill_holes", action="store_true", help="binary_fill_holes for solid occupancy")
     p.add_argument("--keep_lcc", action="store_true", help="keep largest connected component")
+    p.add_argument("--min_occupied_voxels", type=int, default=1, help="skip models with fewer occupied voxels")
     args = p.parse_args()
+    validate_args(args)
+    if args.min_occupied_voxels < 1:
+        raise SystemExit("--min_occupied_voxels must be >= 1")
+    if not os.path.isdir(args.mesh_dir):
+        raise SystemExit(f"--mesh_dir does not exist: {args.mesh_dir}")
+    global trimesh, binary_fill_holes, label
+    try:
+        import trimesh as _trimesh
+        from scipy.ndimage import binary_fill_holes as _binary_fill_holes, label as _label
+    except ImportError as exc:
+        raise SystemExit(
+            f"Missing dependency: {exc}. Install project requirements before dataset building."
+        ) from exc
+    trimesh = _trimesh
+    binary_fill_holes = _binary_fill_holes
+    label = _label
 
     ensure_dir(args.out_dir)
     paths = list_meshes(args.mesh_dir)
@@ -90,6 +121,9 @@ def main():
         "resolution": args.resolution,
         "max_models": args.max_models,
         "seed": args.seed,
+        "train_frac": args.train_frac,
+        "val_frac": args.val_frac,
+        "min_occupied_voxels": args.min_occupied_voxels,
         "sizes": {k: len(v) for k,v in splits.items()},
         "note": "surface occupancy via trimesh.voxelize(method=subdivide), optional 3D fill_holes + largest-CC cleanup"
     }, os.path.join(args.out_dir, "meta.json"))
@@ -97,6 +131,8 @@ def main():
     for split, split_paths in splits.items():
         voxels = np.zeros((len(split_paths), args.resolution, args.resolution, args.resolution), dtype=np.uint8)
         keep = []
+        fail_count = 0
+        failures: list[str] = []
         for path in tqdm(split_paths, desc=f"Voxelize {split}"):
             try:
                 mesh = trimesh.load(path, force="mesh")
@@ -115,17 +151,24 @@ def main():
                     occ = binary_fill_holes(occ > 0).astype(np.uint8)
                 if args.keep_lcc:
                     occ = keep_largest_cc(occ)
-                if occ.sum() == 0:
+                if int(occ.sum()) < args.min_occupied_voxels:
                     continue
                 voxels[len(keep)] = occ
                 keep.append(path)
-            except Exception:
+            except Exception as exc:
+                fail_count += 1
+                if len(failures) < 20:
+                    failures.append(f"{path} | {exc}")
                 continue
         voxels = voxels[:len(keep)]
         np.savez_compressed(os.path.join(args.out_dir, f"{split}.npz"),
                             voxels=voxels,
-                            paths=np.array(keep, dtype=object))
+                            paths=np.array(keep, dtype=str))
         print(f"[{split}] kept {len(keep)}/{len(split_paths)}")
+        if fail_count:
+            print(f"[{split}] failures={fail_count} (showing up to 20)")
+            for row in failures:
+                print("  ", row)
 
 if __name__ == "__main__":
     main()

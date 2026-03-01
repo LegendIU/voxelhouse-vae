@@ -12,6 +12,12 @@ def main():
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--scale", type=float, default=1.0)
     args = p.parse_args()
+    if args.limit < 0:
+        raise SystemExit("--limit must be >= 0")
+    if args.scale <= 0:
+        raise SystemExit("--scale must be > 0")
+    if not os.path.isdir(args.in_dir):
+        raise SystemExit(f"--in_dir does not exist: {args.in_dir}")
 
     ensure_dir(args.out_dir)
     script_path = Path(__file__).resolve().parent / "blender_fbx_to_obj.py"
@@ -33,6 +39,9 @@ def main():
     except FileNotFoundError:
         print("[ERROR] Blender executable not found. Pass --blender_path to blender.exe")
         sys.exit(1)
+    except subprocess.CalledProcessError as exc:
+        print(f"[ERROR] Blender finished with non-zero exit code: {exc.returncode}")
+        sys.exit(exc.returncode)
 
     save_json({
         "in_dir": os.path.abspath(args.in_dir),

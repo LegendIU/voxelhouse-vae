@@ -7,6 +7,10 @@
 # Python virtual environment
 /.venv/
 
+# IDE
+/.idea/
+/.vscode/
+
 # Python caches
 __pycache__/
 *.py[cod]

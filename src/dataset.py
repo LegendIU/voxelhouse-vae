@@ -5,13 +5,35 @@ from torch.utils.data import Dataset
 
 class VoxelNPZDataset(Dataset):
     def __init__(self, npz_path: str, resolution: int | None = None, augment: bool = False, seed: int = 42):
-        data = np.load(npz_path, allow_pickle=True)
-        self.voxels = data["voxels"]  # uint8 [N,R,R,R]
-        self.paths = data.get("paths", None)
+        self.voxels, self.paths = self._load_arrays(npz_path)
         self.augment = augment
+        self.seed = int(seed)
         self.rng = np.random.default_rng(seed)
+        if self.voxels.ndim != 4:
+            raise ValueError(f"Expected voxels with shape [N,R,R,R], got {self.voxels.shape}")
         if resolution is not None:
-            assert self.voxels.shape[1] == resolution, f"Expected resolution {resolution}, got {self.voxels.shape[1]}"
+            if self.voxels.shape[1] != resolution:
+                raise ValueError(f"Expected resolution {resolution}, got {self.voxels.shape[1]}")
+
+    @staticmethod
+    def _load_arrays(npz_path: str):
+        try:
+            with np.load(npz_path, allow_pickle=False) as data:
+                if "voxels" not in data:
+                    raise KeyError(f"'voxels' key is missing in {npz_path}")
+                voxels = np.asarray(data["voxels"])
+                paths = np.asarray(data["paths"]) if "paths" in data.files else None
+                return voxels, paths
+        except ValueError as exc:
+            # Backward compatibility with old archives that store object arrays.
+            if "allow_pickle=False" not in str(exc):
+                raise
+            with np.load(npz_path, allow_pickle=True) as data:
+                if "voxels" not in data:
+                    raise KeyError(f"'voxels' key is missing in {npz_path}")
+                voxels = np.asarray(data["voxels"])
+                paths = np.asarray(data["paths"]) if "paths" in data.files else None
+                return voxels, paths
 
     def __len__(self):
         return int(self.voxels.shape[0])
@@ -31,5 +53,5 @@ class VoxelNPZDataset(Dataset):
         v = self.voxels[idx]
         if self.augment:
             v = self._augment(v)
-        x = torch.from_numpy(v.astype(np.float32))[None, ...]  # [1,R,R,R]
+        x = torch.from_numpy(v.astype(np.float32, copy=False))[None, ...]  # [1,R,R,R]
         return x
