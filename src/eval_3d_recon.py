@@ -3,13 +3,89 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections import deque
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from dataset import VoxelNPZDataset
 from model_3d import VAE3D, kl_divergence
 from utils import choose_device, compute_iou, dice_loss_from_logits
+
+
+def _neighbors_6(z: int, y: int, x: int, d: int, h: int, w: int):
+    if z > 0:
+        yield z - 1, y, x
+    if z + 1 < d:
+        yield z + 1, y, x
+    if y > 0:
+        yield z, y - 1, x
+    if y + 1 < h:
+        yield z, y + 1, x
+    if x > 0:
+        yield z, y, x - 1
+    if x + 1 < w:
+        yield z, y, x + 1
+
+
+def connected_components_stats_single(mask: np.ndarray) -> tuple[int, float]:
+    """
+    Returns:
+        (num_components, largest_component_ratio)
+    largest_component_ratio = largest_component_voxels / total_occupied_voxels
+    """
+    occ = mask.astype(np.bool_)
+    total_occ = int(occ.sum())
+    if total_occ == 0:
+        return 0, 0.0
+
+    visited = np.zeros_like(occ, dtype=np.bool_)
+    d, h, w = occ.shape
+    num_components = 0
+    largest = 0
+
+    occ_coords = np.argwhere(occ)
+    for start in occ_coords:
+        z0, y0, x0 = int(start[0]), int(start[1]), int(start[2])
+        if visited[z0, y0, x0]:
+            continue
+
+        num_components += 1
+        q = deque([(z0, y0, x0)])
+        visited[z0, y0, x0] = True
+        size = 0
+
+        while q:
+            z, y, x = q.popleft()
+            size += 1
+            for nz, ny, nx in _neighbors_6(z, y, x, d, h, w):
+                if occ[nz, ny, nx] and not visited[nz, ny, nx]:
+                    visited[nz, ny, nx] = True
+                    q.append((nz, ny, nx))
+
+        if size > largest:
+            largest = size
+
+    return num_components, float(largest) / float(total_occ)
+
+
+def voxel_precision_recall_from_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    threshold: float,
+    eps: float = 1e-8,
+) -> tuple[float, float]:
+    pred = (torch.sigmoid(logits) > threshold).float()
+    tgt = (target > 0.5).float()
+
+    tp = float((pred * tgt).sum().item())
+    fp = float((pred * (1.0 - tgt)).sum().item())
+    fn = float(((1.0 - pred) * tgt).sum().item())
+
+    precision = tp / max(tp + fp, eps)
+    recall = tp / max(tp + fn, eps)
+    return precision, recall
 
 
 @torch.no_grad()
@@ -51,7 +127,11 @@ def main() -> None:
     kl_weight = float(cfg.get("kl_weight", 5e-4))
     dice_weight = float(cfg.get("dice_weight", 0.0))
 
-    ds = VoxelNPZDataset(os.path.join(args.data_root, f"{args.split}.npz"), resolution=resolution, augment=False)
+    ds = VoxelNPZDataset(
+        os.path.join(args.data_root, f"{args.split}.npz"),
+        resolution=resolution,
+        augment=False,
+    )
     if len(ds) == 0:
         raise SystemExit(f"Split '{args.split}' is empty at {args.data_root}")
 
@@ -68,8 +148,19 @@ def main() -> None:
     model.load_state_dict(ckpt["model"])
     model.eval()
 
-    total_loss = total_recon = total_dice = total_kl = total_iou = 0.0
+    total_loss = 0.0
+    total_recon = 0.0
+    total_dice = 0.0
+    total_kl = 0.0
+    total_iou = 0.0
+    total_precision = 0.0
+    total_recall = 0.0
+
+    total_components = 0.0
+    total_lcc_ratio = 0.0
+
     n = 0
+
     for x in loader:
         x = x.to(device, non_blocking=True)
         with torch.amp.autocast(device_type=device.type, enabled=use_amp):
@@ -80,12 +171,27 @@ def main() -> None:
             loss = recon + dice_weight * dice + kl_weight * kl
 
         iou = compute_iou(logits, x, threshold=args.threshold)
+        precision, recall = voxel_precision_recall_from_logits(logits, x, threshold=args.threshold)
+
+        pred_mask = (torch.sigmoid(logits)[:, 0] > args.threshold).cpu().numpy().astype(np.uint8)
+
         bs = x.shape[0]
+        batch_components = 0.0
+        batch_lcc_ratio = 0.0
+        for i in range(bs):
+            num_cc, lcc_ratio = connected_components_stats_single(pred_mask[i])
+            batch_components += float(num_cc)
+            batch_lcc_ratio += float(lcc_ratio)
+
         total_loss += float(loss.item()) * bs
         total_recon += float(recon.item()) * bs
         total_dice += float(dice.item()) * bs
         total_kl += float(kl.item()) * bs
         total_iou += float(iou) * bs
+        total_precision += float(precision) * bs
+        total_recall += float(recall) * bs
+        total_components += batch_components
+        total_lcc_ratio += batch_lcc_ratio
         n += bs
 
     out = {
@@ -96,6 +202,10 @@ def main() -> None:
         "recon_dice": total_dice / max(n, 1),
         "kl": total_kl / max(n, 1),
         "iou": total_iou / max(n, 1),
+        "voxel_precision": total_precision / max(n, 1),
+        "voxel_recall": total_recall / max(n, 1),
+        "num_components": total_components / max(n, 1),
+        "largest_component_ratio": total_lcc_ratio / max(n, 1),
         "pos_weight": pos_weight,
         "threshold": args.threshold,
         "resolution": resolution,
