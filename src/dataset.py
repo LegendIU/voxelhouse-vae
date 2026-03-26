@@ -5,7 +5,7 @@ from torch.utils.data import Dataset
 
 class VoxelNPZDataset(Dataset):
     def __init__(self, npz_path: str, resolution: int | None = None, augment: bool = False, seed: int = 42):
-        self.voxels, self.paths = self._load_arrays(npz_path)
+        self.voxels, self.paths, self.extra_arrays = self._load_arrays(npz_path)
         self.augment = augment
         self.seed = int(seed)
         self.rng = np.random.default_rng(seed)
@@ -23,7 +23,12 @@ class VoxelNPZDataset(Dataset):
                     raise KeyError(f"'voxels' key is missing in {npz_path}")
                 voxels = np.asarray(data["voxels"])
                 paths = np.asarray(data["paths"]) if "paths" in data.files else None
-                return voxels, paths
+                extras = {
+                    key: np.asarray(data[key])
+                    for key in data.files
+                    if key not in {"voxels", "paths"}
+                }
+                return voxels, paths, extras
         except ValueError as exc:
             # Backward compatibility with old archives that store object arrays.
             if "allow_pickle=False" not in str(exc):
@@ -33,7 +38,12 @@ class VoxelNPZDataset(Dataset):
                     raise KeyError(f"'voxels' key is missing in {npz_path}")
                 voxels = np.asarray(data["voxels"])
                 paths = np.asarray(data["paths"]) if "paths" in data.files else None
-                return voxels, paths
+                extras = {
+                    key: np.asarray(data[key])
+                    for key in data.files
+                    if key not in {"voxels", "paths"}
+                }
+                return voxels, paths, extras
 
     def __len__(self):
         return int(self.voxels.shape[0])

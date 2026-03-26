@@ -16,8 +16,9 @@ def temp_npz(tmp_path: Path) -> Path:
     n, r = 3, 32
     voxels = (np.random.rand(n, r, r, r) > 0.7).astype(np.uint8)
     paths = np.array([f"mesh_{i}.obj" for i in range(n)], dtype=object)
+    style = np.array([0, 1, 2], dtype=np.int64)
     out = tmp_path / "data.npz"
-    np.savez_compressed(out, voxels=voxels, paths=paths)
+    np.savez_compressed(out, voxels=voxels, paths=paths, style=style)
     return out
 
 
@@ -28,6 +29,8 @@ def test_dataset_len_and_shape(temp_npz: Path) -> None:
     x = ds[0]
     assert x.shape == (1, 32, 32, 32)
     assert x.dtype == torch.float32
+    assert "style" in ds.extra_arrays
+    assert ds.extra_arrays["style"].tolist() == [0, 1, 2]
 
 
 def test_dataset_with_augment(temp_npz: Path) -> None:
