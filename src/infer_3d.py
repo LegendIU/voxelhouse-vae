@@ -14,6 +14,8 @@ from utils import choose_device
 if TYPE_CHECKING:
     from PIL import Image
 
+_MESH_EXPORT_WARNED = False
+
 
 def mc_vertices_faces(occ: np.ndarray):
     occ = occ.astype(np.float32)
@@ -39,10 +41,23 @@ def write_obj(path: str, verts: np.ndarray, faces: np.ndarray):
 
 
 def export_mesh_from_occ(occ: np.ndarray, out_path: str) -> bool:
+    global _MESH_EXPORT_WARNED
     if occ.mean() < 1e-5 or occ.mean() > 1.0 - 1e-5:
         return False
 
-    verts, faces = mc_vertices_faces(occ)
+    try:
+        verts, faces = mc_vertices_faces(occ)
+    except ModuleNotFoundError as exc:
+        if not _MESH_EXPORT_WARNED:
+            print(f"[WARN] Mesh export skipped because an optional dependency is missing: {exc}")
+            _MESH_EXPORT_WARNED = True
+        return False
+    except Exception as exc:
+        if not _MESH_EXPORT_WARNED:
+            print(f"[WARN] Mesh export skipped due to marching-cubes failure: {exc}")
+            _MESH_EXPORT_WARNED = True
+        return False
+
     if len(verts) == 0 or len(faces) == 0:
         return False
 

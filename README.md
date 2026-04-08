@@ -18,6 +18,12 @@ pip install -r requirements.txt
 
 - `src/build_voxel_dataset.py`: voxelizes meshes and creates `train/val/test` `.npz` files
 - `src/train_3d_vae.py`: trains 3D VAE and writes checkpoints/metrics
+- `src/train_3d_vqvae.py`: trains 3D VQ-VAE and exposes discrete latent tokens
+- `src/latent_transformer.py`: autoregressive Transformer prior over latent tokens
+- `src/train_latent_prior.py`: trains the Transformer prior on VQ-VAE token sequences
+- `src/eval_latent_prior.py`: evaluates token-level likelihood / perplexity / accuracy
+- `src/sample_3d_prior.py`: samples latent tokens, decodes them to voxels, saves grids/meshes
+- `src/eval_generative_models.py`: compares Gaussian VAE prior vs Transformer prior and reports diversity metrics
 - `src/eval_3d_recon.py`: evaluates reconstruction metrics on a split
 - `src/infer_3d.py`: samples and exports projection grids + OBJ meshes
 - `src/convert_fbx_to_obj.py`: batch FBX -> OBJ conversion via Blender CLI
@@ -69,7 +75,56 @@ Artifacts are written into `outputs/vae3d/run_YYYYMMDD_HHMMSS/`:
 - `loss_curve.png`, `iou_curve.png`
 - reconstruction previews `epoch_*_recon.png`
 
-## 4) Evaluate
+## 4) Train VQ-VAE
+
+```bash
+python src/train_3d_vqvae.py \
+  --data_root data/houses3k_vox64 \
+  --out_dir outputs/vqvae3d \
+  --device cuda \
+  --epochs 200 \
+  --batch_size 6 \
+  --embedding_dim 128 \
+  --codebook_size 512
+```
+
+This produces a discrete latent grid (`R/8 x R/8 x R/8`) that can be modeled autoregressively.
+
+## 5) Train Latent Transformer Prior
+
+```bash
+python src/train_latent_prior.py \
+  --vqvae_ckpt outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --data_root data/houses3k_vox64 \
+  --out_dir outputs/latent_prior \
+  --device cuda \
+  --epochs 100 \
+  --batch_size 8 \
+  --d_model 256 \
+  --nhead 8 \
+  --num_layers 8
+```
+
+Optional conditioning is supported through:
+
+- `--condition_mode none`
+- `--condition_mode shape_stats` for automatically binned house-shape attributes
+- `--condition_mode npz_fields --condition_fields class_id,style_id` for integer fields stored in the `.npz`
+
+## 6) Evaluate Prior
+
+```bash
+python src/eval_latent_prior.py \
+  --prior_ckpt outputs/latent_prior/run_YYYYMMDD_HHMMSS/best.pt \
+  --vqvae_ckpt outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --data_root data/houses3k_vox64 \
+  --split test \
+  --device cuda
+```
+
+The script reports token-level cross-entropy, perplexity and token accuracy.
+
+## 7) Evaluate Reconstruction
 
 ```bash
 python src/eval_3d_recon.py \
@@ -79,7 +134,9 @@ python src/eval_3d_recon.py \
   --device cuda
 ```
 
-## 5) Sample and Export Meshes
+## 8) Sample and Export Meshes
+
+VAE Gaussian prior:
 
 ```bash
 python src/infer_3d.py \
@@ -92,6 +149,47 @@ python src/infer_3d.py \
 ```
 
 For posterior/interpolation modes, also pass `--data_root` and `--split`.
+
+Transformer prior on VQ-VAE tokens:
+
+```bash
+python src/sample_3d_prior.py \
+  --prior_ckpt outputs/latent_prior/run_YYYYMMDD_HHMMSS/best.pt \
+  --vqvae_ckpt outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --out_dir outputs/prior_samples \
+  --n_samples 64 \
+  --temperature 1.0 \
+  --top_k 32 \
+  --export_projections \
+  --export_meshes
+```
+
+Sampling modes are controlled by `--greedy`, `--temperature`, `--top_k` and `--top_p`.
+
+## 9) Benchmark Gaussian Prior vs Transformer Prior
+
+```bash
+python src/eval_generative_models.py \
+  --out_dir outputs/generative_benchmark \
+  --data_root data/houses3k_vox64 \
+  --reference_split test \
+  --vae_ckpt outputs/vae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --vqvae_ckpt outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --prior_ckpt outputs/latent_prior/run_YYYYMMDD_HHMMSS/best.pt \
+  --n_samples 64 \
+  --prior_modes greedy,temperature,topk,topp \
+  --temperature 1.0 \
+  --top_k 32 \
+  --top_p 0.9
+```
+
+Artifacts include:
+
+- `benchmark.json` and `benchmark.csv`
+- projection grids for each model / decoding mode
+- diversity metrics: `unique_ratio`, pairwise Hamming / IoU diversity
+- plausibility metrics: validity, connected components, largest-component ratio
+- optional nearest-reference IoU against a held-out split
 
 ## Running scripts
 
@@ -118,6 +216,7 @@ ruff check src/
 
 CI runs tests and ruff on every push/PR (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
-## Improvements
+## Notes
 
-See [IMPROVEMENTS.md](IMPROVEMENTS.md) for analysis and suggested enhancements (DRY refactors, early stopping, tests, reproducibility).
+- Missing optional mesh-export dependencies no longer break sampling; the scripts warn and continue.
+- Report guidance for the learned prior is summarized in [transformer_prior_report.md](transformer_prior_report.md).
