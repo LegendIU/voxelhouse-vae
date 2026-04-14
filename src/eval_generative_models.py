@@ -13,6 +13,7 @@ from constraint_guidance import ConstraintSpec
 from dataset import VoxelNPZDataset
 from generative_metrics import summarize_voxel_samples
 from infer_3d import export_mesh_from_occ, render_projections, save_grid
+from mlops import MlflowLogger
 from model_loading import load_latent_prior, load_vae_model, load_vqvae_model
 from utils import choose_device
 
@@ -89,6 +90,9 @@ def main() -> None:
     parser.add_argument("--min_symmetry", type=float, default=0.45)
     parser.add_argument("--min_plausibility", type=float, default=0.55)
     parser.add_argument("--require_compact", action="store_true")
+    parser.add_argument("--mlflow", action="store_true")
+    parser.add_argument("--mlflow_experiment", type=str, default="voxelhouse-vae")
+    parser.add_argument("--mlflow_tracking_uri", type=str, default="")
     args = parser.parse_args()
 
     if args.n_samples <= 0:
@@ -117,6 +121,14 @@ def main() -> None:
         raise SystemExit("Provide at least --vae_ckpt or both --vqvae_ckpt and --prior_ckpt")
 
     os.makedirs(args.out_dir, exist_ok=True)
+    mlf = MlflowLogger.create(
+        enabled=bool(args.mlflow),
+        experiment_name=args.mlflow_experiment,
+        run_name="eval_generative_models",
+        tracking_uri=(args.mlflow_tracking_uri or None),
+        tags={"script": "eval_generative_models", "task": "benchmark"},
+    )
+    mlf.log_params(vars(args))
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -356,6 +368,11 @@ def main() -> None:
             writer.writeheader()
             for row in rows:
                 writer.writerow(row)
+    csv_path = os.path.join(args.out_dir, "benchmark.csv")
+    mlf.log_artifact(json_path, artifact_path="benchmark")
+    if os.path.exists(csv_path):
+        mlf.log_artifact(csv_path, artifact_path="benchmark")
+    mlf.close()
 
         summary_fields = [
             "model",

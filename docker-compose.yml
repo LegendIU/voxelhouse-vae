@@ -1,0 +1,75 @@
+services:
+  dev-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: voxelhouse-vae:cpu
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    stdin_open: true
+    tty: true
+    command: bash
+
+  smoke-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: voxelhouse-vae:cpu
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    command: bash -lc "bash scripts/mlops_smoke_pipeline.sh ."
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: voxelhouse-vae:cpu
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    command: >
+      bash -lc "mkdir -p /workspace/mlruns/artifacts && mlflow ui
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////workspace/mlruns/mlflow.db
+      --default-artifact-root /workspace/mlruns/artifacts"
+    ports:
+      - "5000:5000"
+
+  dev-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: voxelhouse-vae:gpu
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    gpus: all
+    stdin_open: true
+    tty: true
+    command: bash
+
+  smoke-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: voxelhouse-vae:gpu
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    gpus: all
+    command: bash -lc "bash scripts/mlops_smoke_pipeline.sh ."

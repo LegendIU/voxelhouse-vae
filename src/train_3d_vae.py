@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import DataLoader, get_worker_info
 
 from dataset import VoxelNPZDataset
+from mlops import MlflowLogger
 from model_3d import VAE3D, kl_divergence
 from utils import ensure_dir, save_json, choose_device, compute_iou, dice_loss_from_logits
 
@@ -174,6 +175,9 @@ def main() -> None:
     parser.add_argument("--early_stopping_patience", type=int, default=25, help="Stop if val_iou does not improve for N epochs; 0 disables")
     parser.add_argument("--min_delta", type=float, default=1e-4, help="Minimum IoU improvement to reset patience")
     parser.add_argument("--recon_threshold", type=float, default=0.5)
+    parser.add_argument("--mlflow", action="store_true")
+    parser.add_argument("--mlflow_experiment", type=str, default="voxelhouse-vae")
+    parser.add_argument("--mlflow_tracking_uri", type=str, default="")
 
     args = parser.parse_args()
     validate_args(args)
@@ -192,6 +196,14 @@ def main() -> None:
     run_dir = os.path.join(args.out_dir, f"run_{timestamp}")
     ensure_dir(run_dir)
     save_json(vars(args), os.path.join(run_dir, "config.json"))
+    mlf = MlflowLogger.create(
+        enabled=bool(args.mlflow),
+        experiment_name=args.mlflow_experiment,
+        run_name=f"train_3d_vae_{timestamp}",
+        tracking_uri=(args.mlflow_tracking_uri or None),
+        tags={"script": "train_3d_vae", "model": "vae3d"},
+    )
+    mlf.log_params(vars(args))
 
     train_ds = VoxelNPZDataset(
         os.path.join(args.data_root, "train.npz"),
@@ -410,6 +422,16 @@ def main() -> None:
                 "val_bce": val_bce,
             }
         )
+        mlf.log_metrics(
+            {
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_iou": val_iou,
+                "best_val_iou": best_val_iou,
+                "kl_weight": kl_w,
+            },
+            step=epoch,
+        )
 
         save_checkpoint(
             os.path.join(run_dir, "last.pt"),
@@ -515,6 +537,10 @@ def main() -> None:
         "stopped_early": bool(len(history) < args.epochs),
     }
     save_json(summary, os.path.join(run_dir, "training_summary.json"))
+    mlf.log_artifact(os.path.join(run_dir, "config.json"), artifact_path="config")
+    mlf.log_artifact(os.path.join(run_dir, "metrics.csv"), artifact_path="metrics")
+    mlf.log_artifact(os.path.join(run_dir, "training_summary.json"), artifact_path="metrics")
+    mlf.close()
 
     print("Done. Run directory:", os.path.abspath(run_dir))
 
