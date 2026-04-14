@@ -334,7 +334,7 @@ The repository includes a lightweight MLOps baseline:
 
 - optional MLflow tracking in training/evaluation scripts
 - reproducible smoke pipeline (`scripts/mlops_smoke_pipeline.sh`)
-- quality gate checks (`src/check_quality_gate.py` with `mlops/quality_gates.json`)
+- quality gate checks (`src/check_quality_gate.py`)
 
 ### MLflow tracking
 
@@ -367,6 +367,11 @@ python src/check_quality_gate.py \
 
 The command exits with non-zero status if minimum quality constraints are violated.
 
+Gate profiles:
+
+- `mlops/quality_gates.json`: stricter thresholds for real experiments
+- `mlops/quality_gates_smoke.json`: relaxed thresholds for tiny smoke runs
+
 ### Smoke pipeline
 
 For fast end-to-end validation in CI or locally:
@@ -376,8 +381,5 @@ bash scripts/mlops_smoke_pipeline.sh .
 ```
 
 It creates a tiny synthetic dataset, runs short VQ-VAE + prior training, runs generative benchmark, then validates quality gates.
-
-## Notes
-
-- Missing optional mesh-export dependencies no longer break sampling; the scripts warn and continue.
-- Report guidance for the learned prior is summarized in [transformer_prior_report.md](transformer_prior_report.md).
+The smoke script uses `mlops/quality_gates_smoke.json` by default.
+It also logs runs to MLflow experiment `voxelhouse-vae-smoke` using the shared tracking DB (`mlruns/mlflow.db`).

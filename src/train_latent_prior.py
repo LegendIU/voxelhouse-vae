@@ -14,6 +14,7 @@ from conditioning import gather_condition_ids, infer_condition_vocab_sizes, pars
 from dataset import VoxelNPZDataset
 from latent_transformer import LatentTokenTransformer
 from logging_utils import append_jsonl, build_run_manifest, save_manifest
+from mlops import MlflowLogger
 from model_loading import load_vqvae_model
 from utils import choose_device, ensure_dir, save_json
 
@@ -130,6 +131,9 @@ def main() -> None:
     parser.add_argument("--save_every", type=int, default=5)
     parser.add_argument("--early_stopping_patience", type=int, default=20)
     parser.add_argument("--min_delta", type=float, default=1e-4)
+    parser.add_argument("--mlflow", action="store_true")
+    parser.add_argument("--mlflow_experiment", type=str, default="voxelhouse-vae")
+    parser.add_argument("--mlflow_tracking_uri", type=str, default="")
     args = parser.parse_args()
     validate_args(args)
 
@@ -193,6 +197,14 @@ def main() -> None:
     config_to_save["condition_fields"] = condition_fields
     config_to_save["condition_vocab_sizes"] = condition_vocab_sizes
     save_json(config_to_save, os.path.join(run_dir, "config.json"))
+    mlf = MlflowLogger.create(
+        enabled=bool(args.mlflow),
+        experiment_name=args.mlflow_experiment,
+        run_name=f"train_latent_prior_{timestamp}",
+        tracking_uri=(args.mlflow_tracking_uri or None),
+        tags={"script": "train_latent_prior", "model": "latent_transformer"},
+    )
+    mlf.log_params(config_to_save)
 
     run_manifest = build_run_manifest(stage="train_latent_prior", config=config_to_save, extra={"data_root": os.path.abspath(args.data_root), "vqvae_ckpt": os.path.abspath(args.vqvae_ckpt), "run_dir": os.path.abspath(run_dir), "artifact_family": "latent_prior"})
     save_manifest(run_dir, run_manifest)
@@ -255,10 +267,29 @@ def main() -> None:
             best_val_accuracy = max(best_val_accuracy, val_acc)
         best_val_perplexity = min(best_val_perplexity, val_ppl)
 
+        print(
+            f"Epoch {epoch:03d} | lr {lr_cur:.2e} | "
+            f"train loss {train_loss:.4f}, ppl {train_ppl:.2f}, acc {train_acc:.4f} | "
+            f"val loss {val_loss:.4f}, ppl {val_ppl:.2f}, acc {val_acc:.4f} | "
+            f"best val loss {best_val_loss:.4f}, best val ppl {best_val_perplexity:.2f}"
+        )
         row = {"epoch": epoch, "lr": lr_cur, "train_loss": train_loss, "train_perplexity": train_ppl, "train_token_accuracy": train_acc, "val_loss": val_loss, "val_perplexity": val_ppl, "val_token_accuracy": val_acc, "best_val_loss": best_val_loss, "best_val_perplexity": best_val_perplexity}
         append_jsonl(metrics_jsonl, row)
         with open(metrics_csv, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([epoch, lr_cur, train_loss, train_ppl, train_acc, val_loss, val_ppl, val_acc, best_val_loss, best_val_perplexity])
+        mlf.log_metrics(
+            {
+                "train_loss": train_loss,
+                "train_perplexity": train_ppl,
+                "train_token_accuracy": train_acc,
+                "val_loss": val_loss,
+                "val_perplexity": val_ppl,
+                "val_token_accuracy": val_acc,
+                "best_val_loss": best_val_loss,
+                "best_val_perplexity": best_val_perplexity,
+            },
+            step=epoch,
+        )
 
         save_checkpoint(os.path.join(run_dir, "last.pt"), model=prior, optimizer=opt, scheduler=sched, args=args, epoch=epoch, best_val_loss=best_val_loss, best_val_accuracy=best_val_accuracy, best_val_perplexity=best_val_perplexity, token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape), condition_fields=condition_fields, condition_vocab_sizes=condition_vocab_sizes, codebook_size=int(vq_cfg.get("codebook_size", 512)), run_manifest=run_manifest, checkpoint_role="last")
         if improved_loss:
@@ -273,6 +304,10 @@ def main() -> None:
 
     summary = {"best_val_loss": float(best_val_loss), "best_val_accuracy": float(best_val_accuracy), "best_val_perplexity": float(best_val_perplexity), "run_dir": os.path.abspath(run_dir), "artifact_aliases": {"last": "last.pt", "best_by_val_loss": "best_by_val_loss.pt", "best_by_val_ppl": "best_by_val_ppl.pt"}}
     save_json(summary, os.path.join(run_dir, "training_summary.json"))
+    mlf.log_artifact(os.path.join(run_dir, "config.json"), artifact_path="config")
+    mlf.log_artifact(metrics_csv, artifact_path="metrics")
+    mlf.log_artifact(os.path.join(run_dir, "training_summary.json"), artifact_path="metrics")
+    mlf.close()
     print("Done. Run directory:", os.path.abspath(run_dir))
 
 

@@ -16,7 +16,7 @@ HOUSE_CONDITION_PRESETS: dict[str, dict[str, int]] = {
     "two_story_compact": {
         "stories_bin": 2,
         "footprint_bin": 4,
-        "aspect_ratio_bin": 6,
+        "aspect_ratio_bin": 5,
         "roof_type": 0,
         "symmetry_flag": 1,
         "compactness_flag": 1,

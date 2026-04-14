@@ -13,6 +13,7 @@ from constraint_guidance import ConstraintSpec
 from generative_metrics import summarize_voxel_samples
 from infer_3d import export_mesh_from_occ, render_projections, save_grid
 from logging_utils import build_run_manifest, save_manifest
+from mlops import MlflowLogger
 from model_loading import load_latent_prior, load_vae_model, load_vqvae_model
 from utils import choose_device
 
@@ -80,11 +81,22 @@ def main() -> None:
     parser.add_argument("--min_symmetry", type=float, default=0.45)
     parser.add_argument("--min_plausibility", type=float, default=0.55)
     parser.add_argument("--require_compact", action="store_true")
+    parser.add_argument("--mlflow", action="store_true")
+    parser.add_argument("--mlflow_experiment", type=str, default="voxelhouse-vae")
+    parser.add_argument("--mlflow_tracking_uri", type=str, default="")
     args = parser.parse_args()
 
     if args.vae_ckpt is None and (args.vqvae_ckpt is None or args.prior_ckpt is None):
         raise SystemExit("Provide at least --vae_ckpt or both --vqvae_ckpt and --prior_ckpt")
     os.makedirs(args.out_dir, exist_ok=True)
+    mlf = MlflowLogger.create(
+        enabled=bool(args.mlflow),
+        experiment_name=args.mlflow_experiment,
+        run_name="eval_generative_models",
+        tracking_uri=(args.mlflow_tracking_uri or None),
+        tags={"script": "eval_generative_models", "task": "benchmark"},
+    )
+    mlf.log_params(vars(args))
     np.random.seed(args.seed); torch.manual_seed(args.seed)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(args.seed)
 
@@ -160,19 +172,49 @@ def main() -> None:
 
     with open(os.path.join(args.out_dir, "benchmark.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2, ensure_ascii=False)
+    benchmark_json = os.path.join(args.out_dir, "benchmark.json")
     if rows:
         fieldnames = sorted({key for row in rows for key in row.keys()})
-        with open(os.path.join(args.out_dir, "benchmark.csv"), "w", newline="", encoding="utf-8") as f:
+        benchmark_csv = os.path.join(args.out_dir, "benchmark.csv")
+        with open(benchmark_csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader(); writer.writerows(rows)
-        summary_cols = ["model", "regime", "sampling_mode", "plausibility_score", "pairwise_iou_diversity", "unique_ratio", "connectedness", "artifact_prefix"]
-        with open(os.path.join(args.out_dir, "comparison_summary.csv"), "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=summary_cols)
             writer.writeheader()
             for row in rows:
-                writer.writerow({k: row.get(k, "") for k in summary_cols})
+                writer.writerow(row)
+        summary_fields = [
+            "model",
+            "regime",
+            "sampling_mode",
+            "valid_ratio",
+            "unique_ratio",
+            "occupancy_mean",
+            "occupancy_std",
+            "connectedness",
+            "unsupported_mass",
+            "component_count",
+            "symmetry_proxy",
+            "plausibility_score",
+            "pairwise_iou_diversity",
+            "reference_nn_iou_mean",
+            "artifact_prefix",
+        ]
+        summary_fields = [field for field in summary_fields if any(field in row for row in rows)]
+        with open(os.path.join(args.out_dir, "comparison_summary.csv"), "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=summary_fields)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in summary_fields})
+    else:
+        benchmark_csv = os.path.join(args.out_dir, "benchmark.csv")
     manifest = build_run_manifest(stage="eval_generative_models", config=vars(args), extra={"artifact_family": "generative_benchmark", "out_dir": os.path.abspath(args.out_dir)})
     save_manifest(args.out_dir, manifest)
+    mlf.log_artifact(benchmark_json, artifact_path="benchmark")
+    if os.path.exists(benchmark_csv):
+        mlf.log_artifact(benchmark_csv, artifact_path="benchmark")
+    comparison_csv = os.path.join(args.out_dir, "comparison_summary.csv")
+    if os.path.exists(comparison_csv):
+        mlf.log_artifact(comparison_csv, artifact_path="benchmark")
+    mlf.close()
     print(json.dumps(rows, indent=2))
 
 

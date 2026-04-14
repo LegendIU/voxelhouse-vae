@@ -1,0 +1,10 @@
+{
+  "default_regime": "constraint_guided",
+  "fallback_regime": "unconditional",
+  "thresholds": {
+    "connectedness": { "min": 0.7 },
+    "unsupported_mass": { "max": 0.3 },
+    "component_count": { "max": 500.0 },
+    "plausibility_score": { "min": 0.45 }
+  }
+}
