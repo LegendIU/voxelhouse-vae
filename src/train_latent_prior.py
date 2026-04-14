@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset, get_worker_info
 from conditioning import gather_condition_ids, infer_condition_vocab_sizes, parse_condition_fields
 from dataset import VoxelNPZDataset
 from latent_transformer import LatentTokenTransformer
-from mlops import MlflowLogger
+from logging_utils import append_jsonl, build_run_manifest, save_manifest
 from model_loading import load_vqvae_model
 from utils import choose_device, ensure_dir, save_json
 
@@ -94,7 +94,6 @@ def save_checkpoint(
     args: argparse.Namespace,
     epoch: int,
     best_val_loss: float,
-    best_val_perplexity: float,
     best_val_accuracy: float,
     token_grid_shape: tuple[int, int, int],
     condition_fields: list[str],
@@ -109,7 +108,6 @@ def save_checkpoint(
             "config": vars(args),
             "epoch": int(epoch),
             "best_val_loss": float(best_val_loss),
-            "best_val_perplexity": float(best_val_perplexity),
             "best_val_accuracy": float(best_val_accuracy),
             "token_grid_shape": tuple(int(v) for v in token_grid_shape),
             "condition_fields": condition_fields,
@@ -126,6 +124,7 @@ def main() -> None:
     parser.add_argument("--data_root", required=True)
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--run_name", type=str, default="")
 
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -138,12 +137,7 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--ff_mult", type=int, default=4)
 
-    parser.add_argument(
-        "--condition_mode",
-        type=str,
-        default="none",
-        choices=["none", "shape_stats", "house_attributes", "npz_fields"],
-    )
+    parser.add_argument("--condition_mode", type=str, default="none", choices=["none", "shape_stats", "house_attributes", "npz_fields"])
     parser.add_argument("--condition_fields", type=str, default="")
     parser.add_argument("--condition_bins", type=int, default=8)
 
@@ -157,9 +151,6 @@ def main() -> None:
     parser.add_argument("--save_every", type=int, default=5)
     parser.add_argument("--early_stopping_patience", type=int, default=20)
     parser.add_argument("--min_delta", type=float, default=1e-4)
-    parser.add_argument("--mlflow", action="store_true")
-    parser.add_argument("--mlflow_experiment", type=str, default="voxelhouse-vae")
-    parser.add_argument("--mlflow_tracking_uri", type=str, default="")
 
     args = parser.parse_args()
     validate_args(args)
@@ -179,18 +170,8 @@ def main() -> None:
         param.requires_grad_(False)
     resolution = int(vq_cfg.get("resolution", 64))
 
-    train_ds = VoxelNPZDataset(
-        os.path.join(args.data_root, "train.npz"),
-        resolution=resolution,
-        augment=False,
-        seed=args.seed,
-    )
-    val_ds = VoxelNPZDataset(
-        os.path.join(args.data_root, "val.npz"),
-        resolution=resolution,
-        augment=False,
-        seed=args.seed,
-    )
+    train_ds = VoxelNPZDataset(os.path.join(args.data_root, "train.npz"), resolution=resolution, augment=False, seed=args.seed)
+    val_ds = VoxelNPZDataset(os.path.join(args.data_root, "val.npz"), resolution=resolution, augment=False, seed=args.seed)
 
     if args.overfit_n and args.overfit_n > 0:
         cap = args.overfit_n
@@ -260,42 +241,40 @@ def main() -> None:
     )
 
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(args.out_dir, f"run_{timestamp}")
+    run_stub = args.run_name.strip() or "latent_prior"
+    run_dir = os.path.join(args.out_dir, f"{run_stub}_{timestamp}")
     ensure_dir(run_dir)
+
     config_to_save = vars(args).copy()
     config_to_save["codebook_size"] = int(vq_cfg.get("codebook_size", 512))
     config_to_save["token_grid_shape"] = list(vqvae.token_grid_shape)
     config_to_save["condition_fields"] = condition_fields
     config_to_save["condition_vocab_sizes"] = condition_vocab_sizes
     save_json(config_to_save, os.path.join(run_dir, "config.json"))
-    mlf = MlflowLogger.create(
-        enabled=bool(args.mlflow),
-        experiment_name=args.mlflow_experiment,
-        run_name=f"train_latent_prior_{timestamp}",
-        tracking_uri=(args.mlflow_tracking_uri or None),
-        tags={"script": "train_latent_prior", "model": "latent_transformer"},
+
+    manifest = build_run_manifest(
+        stage="train_latent_prior",
+        config=config_to_save,
+        extra={
+            "data_root": os.path.abspath(args.data_root),
+            "vqvae_ckpt": os.path.abspath(args.vqvae_ckpt),
+            "run_dir": os.path.abspath(run_dir),
+            "artifact_family": "latent_prior",
+        },
     )
-    mlf.log_params(config_to_save)
+    save_manifest(run_dir, manifest)
 
     metrics_path = os.path.join(run_dir, "metrics.csv")
+    metrics_jsonl_path = os.path.join(run_dir, "metrics.jsonl")
     with open(metrics_path, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(
             [
-                "epoch",
-                "lr",
-                "train_loss",
-                "train_perplexity",
-                "train_token_accuracy",
-                "val_loss",
-                "val_perplexity",
-                "val_token_accuracy",
-                "best_val_loss_so_far",
-                "best_val_perplexity_so_far",
+                "epoch", "lr", "train_loss", "train_perplexity", "train_token_accuracy",
+                "val_loss", "val_perplexity", "val_token_accuracy", "best_val_loss_so_far"
             ]
         )
 
     best_val_loss = float("inf")
-    best_val_perplexity = float("inf")
     best_val_accuracy = 0.0
     epochs_without_improvement = 0
     history: list[dict[str, float]] = []
@@ -311,14 +290,7 @@ def main() -> None:
 
             with torch.no_grad():
                 token_ids = vqvae.flatten_token_grid(vqvae.encode_tokens(x))
-                condition_ids = gather_condition_ids(
-                    train_ds,
-                    idx,
-                    x,
-                    mode=args.condition_mode,
-                    fields=condition_fields,
-                    num_bins=args.condition_bins,
-                )
+                condition_ids = gather_condition_ids(train_ds, idx, x, mode=args.condition_mode, fields=condition_fields, num_bins=args.condition_bins)
 
             with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 loss, aux = prior.compute_loss(token_ids, condition_ids=condition_ids)
@@ -355,14 +327,7 @@ def main() -> None:
                 idx = idx.to(device=device, dtype=torch.long)
 
                 token_ids = vqvae.flatten_token_grid(vqvae.encode_tokens(x))
-                condition_ids = gather_condition_ids(
-                    val_ds,
-                    idx,
-                    x,
-                    mode=args.condition_mode,
-                    fields=condition_fields,
-                    num_bins=args.condition_bins,
-                )
+                condition_ids = gather_condition_ids(val_ds, idx, x, mode=args.condition_mode, fields=condition_fields, num_bins=args.condition_bins)
 
                 with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                     loss, aux = prior.compute_loss(token_ids, condition_ids=condition_ids)
@@ -379,60 +344,39 @@ def main() -> None:
         improved = val_loss < (best_val_loss - args.min_delta)
         if improved:
             best_val_loss = val_loss
-            best_val_perplexity = val_perplexity
             best_val_accuracy = val_accuracy
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
             best_val_accuracy = max(best_val_accuracy, val_accuracy)
-            best_val_perplexity = min(best_val_perplexity, val_perplexity)
 
         print(
             f"Epoch {epoch:03d} | lr {lr_cur:.2e} | "
             f"train loss {train_loss:.4f}, ppl {train_perplexity:.2f}, acc {train_accuracy:.4f} | "
             f"val loss {val_loss:.4f}, ppl {val_perplexity:.2f}, acc {val_accuracy:.4f} | "
-            f"best val loss {best_val_loss:.4f}, best ppl {best_val_perplexity:.2f}"
+            f"best val loss {best_val_loss:.4f}"
         )
+
+        row = {
+            "epoch": epoch,
+            "lr": lr_cur,
+            "train_loss": train_loss,
+            "train_perplexity": train_perplexity,
+            "train_token_accuracy": train_accuracy,
+            "val_loss": val_loss,
+            "val_perplexity": val_perplexity,
+            "val_token_accuracy": val_accuracy,
+            "best_val_loss": best_val_loss,
+        }
+        append_jsonl(metrics_jsonl_path, row)
 
         with open(metrics_path, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(
-                [
-                    epoch,
-                    lr_cur,
-                    train_loss,
-                    train_perplexity,
-                    train_accuracy,
-                    val_loss,
-                    val_perplexity,
-                    val_accuracy,
-                    best_val_loss,
-                    best_val_perplexity,
-                ]
-            )
+            csv.writer(f).writerow([
+                epoch, lr_cur, train_loss, train_perplexity, train_accuracy,
+                val_loss, val_perplexity, val_accuracy, best_val_loss,
+            ])
 
-        history.append(
-            {
-                "epoch": float(epoch),
-                "train_loss": train_loss,
-                "train_perplexity": train_perplexity,
-                "train_token_accuracy": train_accuracy,
-                "val_loss": val_loss,
-                "val_perplexity": val_perplexity,
-                "val_token_accuracy": val_accuracy,
-            }
-        )
-        mlf.log_metrics(
-            {
-                "train_loss": train_loss,
-                "train_perplexity": train_perplexity,
-                "train_token_accuracy": train_accuracy,
-                "val_loss": val_loss,
-                "val_perplexity": val_perplexity,
-                "val_token_accuracy": val_accuracy,
-                "best_val_loss": best_val_loss,
-            },
-            step=epoch,
-        )
+        history.append({k: float(v) if isinstance(v, (int, float)) else v for k, v in row.items()})
 
         save_checkpoint(
             os.path.join(run_dir, "last.pt"),
@@ -442,7 +386,6 @@ def main() -> None:
             args=args,
             epoch=epoch,
             best_val_loss=best_val_loss,
-            best_val_perplexity=best_val_perplexity,
             best_val_accuracy=best_val_accuracy,
             token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
             condition_fields=condition_fields,
@@ -459,28 +402,13 @@ def main() -> None:
                 args=args,
                 epoch=epoch,
                 best_val_loss=best_val_loss,
-                best_val_perplexity=best_val_perplexity,
                 best_val_accuracy=best_val_accuracy,
                 token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
                 condition_fields=condition_fields,
                 condition_vocab_sizes=condition_vocab_sizes,
                 codebook_size=int(vq_cfg.get("codebook_size", 512)),
             )
-            save_checkpoint(
-                os.path.join(run_dir, "best_by_val_ppl.pt"),
-                model=prior,
-                optimizer=opt,
-                scheduler=sched,
-                args=args,
-                epoch=epoch,
-                best_val_loss=best_val_loss,
-                best_val_perplexity=best_val_perplexity,
-                best_val_accuracy=best_val_accuracy,
-                token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
-                condition_fields=condition_fields,
-                condition_vocab_sizes=condition_vocab_sizes,
-                codebook_size=int(vq_cfg.get("codebook_size", 512)),
-            )
+            save_json(row, os.path.join(run_dir, "best_metrics.json"))
 
         if epoch % args.save_every == 0 or epoch == 1 or epoch == args.epochs or improved:
             save_checkpoint(
@@ -491,7 +419,6 @@ def main() -> None:
                 args=args,
                 epoch=epoch,
                 best_val_loss=best_val_loss,
-                best_val_perplexity=best_val_perplexity,
                 best_val_accuracy=best_val_accuracy,
                 token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
                 condition_fields=condition_fields,
@@ -507,64 +434,14 @@ def main() -> None:
             )
             break
 
-    epochs = [int(h["epoch"]) for h in history]
-    train_loss_curve = [h["train_loss"] for h in history]
-    val_loss_curve = [h["val_loss"] for h in history]
-    train_ppl_curve = [h["train_perplexity"] for h in history]
-    val_ppl_curve = [h["val_perplexity"] for h in history]
-    train_acc_curve = [h["train_token_accuracy"] for h in history]
-    val_acc_curve = [h["val_token_accuracy"] for h in history]
-
-    try:
-        import matplotlib.pyplot as plt
-
-        fig = plt.figure()
-        plt.plot(epochs, train_loss_curve, label="train_loss")
-        plt.plot(epochs, val_loss_curve, label="val_loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Cross-Entropy")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, "loss_curve.png"), dpi=150)
-        plt.close(fig)
-
-        fig = plt.figure()
-        plt.plot(epochs, train_ppl_curve, label="train_perplexity")
-        plt.plot(epochs, val_ppl_curve, label="val_perplexity")
-        plt.xlabel("Epoch")
-        plt.ylabel("Perplexity")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, "perplexity_curve.png"), dpi=150)
-        plt.close(fig)
-
-        fig = plt.figure()
-        plt.plot(epochs, train_acc_curve, label="train_token_accuracy")
-        plt.plot(epochs, val_acc_curve, label="val_token_accuracy")
-        plt.xlabel("Epoch")
-        plt.ylabel("Accuracy")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, "accuracy_curve.png"), dpi=150)
-        plt.close(fig)
-    except ImportError:
-        print("[WARN] matplotlib is not installed; training curves were not saved")
-
     summary = {
         "best_val_loss": float(best_val_loss),
-        "best_val_perplexity": float(best_val_perplexity),
         "best_val_accuracy": float(best_val_accuracy),
         "epochs_completed": int(len(history)),
         "stopped_early": bool(len(history) < args.epochs),
-        "condition_mode": str(args.condition_mode),
-        "condition_fields": condition_fields,
+        "run_dir": os.path.abspath(run_dir),
     }
     save_json(summary, os.path.join(run_dir, "training_summary.json"))
-    mlf.log_artifact(os.path.join(run_dir, "config.json"), artifact_path="config")
-    mlf.log_artifact(os.path.join(run_dir, "metrics.csv"), artifact_path="metrics")
-    mlf.log_artifact(os.path.join(run_dir, "training_summary.json"), artifact_path="metrics")
-    mlf.close()
-
     print("Done. Run directory:", os.path.abspath(run_dir))
 
 
