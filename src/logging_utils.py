@@ -5,14 +5,14 @@ import json
 import os
 import platform
 import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import torch
 
 
 def utc_timestamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def get_git_commit_sha(root: str | None = None) -> str | None:
@@ -48,7 +48,7 @@ def build_run_manifest(
 ) -> dict[str, Any]:
     manifest = {
         "stage": stage,
-        "created_at_utc": datetime.now(UTC).isoformat(),
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit_sha": get_git_commit_sha(root=root),
         "config_hash": config_hash(config),
         "python_version": platform.python_version(),

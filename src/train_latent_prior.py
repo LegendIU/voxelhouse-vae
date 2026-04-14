@@ -4,7 +4,7 @@ import argparse
 import csv
 import os
 import random
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import torch
@@ -187,7 +187,7 @@ def main() -> None:
     train_loader = DataLoader(IndexedDataset(train_ds), batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=pin_memory, worker_init_fn=worker_init_fn, persistent_workers=persistent_workers, generator=generator)
     val_loader = DataLoader(IndexedDataset(val_ds), batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=pin_memory, worker_init_fn=worker_init_fn, persistent_workers=persistent_workers)
 
-    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_stub = args.run_name.strip() or "latent_prior"
     run_dir = os.path.join(args.out_dir, f"{run_stub}_{timestamp}")
     ensure_dir(run_dir)

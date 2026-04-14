@@ -4,7 +4,7 @@ import argparse
 import csv
 import os
 import random
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import torch
@@ -192,7 +192,7 @@ def main() -> None:
     use_amp = bool(args.amp) and (device.type == "cuda")
     pin_memory = bool(args.pin_memory) or (device.type == "cuda")
 
-    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(args.out_dir, f"run_{timestamp}")
     ensure_dir(run_dir)
     save_json(vars(args), os.path.join(run_dir, "config.json"))
