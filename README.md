@@ -109,6 +109,8 @@ Optional conditioning is supported through:
 
 - `--condition_mode none`
 - `--condition_mode shape_stats` for automatically binned house-shape attributes
+- `--condition_mode house_attributes` for controllable house factors:
+  `stories_bin`, `footprint_bin`, `aspect_ratio_bin`, `roof_type`, `symmetry_flag`, `compactness_flag`
 - `--condition_mode npz_fields --condition_fields class_id,style_id` for integer fields stored in the `.npz`
 
 ## 6) Evaluate Prior
@@ -166,6 +168,14 @@ python src/sample_3d_prior.py \
 
 Sampling modes are controlled by `--greedy`, `--temperature`, `--top_k` and `--top_p`.
 
+Constraint-guided sampling with reranking/filtering is supported via:
+
+- `--guidance_candidates` (draw more candidates before selecting top plausible samples)
+- hard/soft validity knobs: `--min_connectedness`, `--max_unsupported_mass`,
+  `--max_component_count`, `--min_symmetry`, `--min_plausibility`, `--require_compact`
+- house-condition presets (`--condition_preset two_story_compact` or `wide_lowrise_sloped`)
+  and custom JSON (`--condition_json '{"stories_bin":2,...}'`)
+
 ## 9) Benchmark Gaussian Prior vs Transformer Prior
 
 ```bash
@@ -189,7 +199,41 @@ Artifacts include:
 - projection grids for each model / decoding mode
 - diversity metrics: `unique_ratio`, pairwise Hamming / IoU diversity
 - plausibility metrics: validity, connected components, largest-component ratio
+- validity-aware metrics: `connectedness`, `unsupported_mass`, `component_count`,
+  `symmetry_proxy`, `plausibility_score`
 - optional nearest-reference IoU against a held-out split
+
+If condition + guidance arguments are provided, the benchmark table includes regimes:
+`unconditional`, `conditional`, `constraint_guided`.
+
+## 10) Conditional + Validity-Aware Demo Scenarios
+
+```bash
+python src/demo_conditional_generation.py \
+  --prior_ckpt outputs/latent_prior/run_YYYYMMDD_HHMMSS/best.pt \
+  --vqvae_ckpt outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --out_dir outputs/conditional_demo \
+  --data_root data/houses3k_vox64 \
+  --split test \
+  --n_samples 32 \
+  --guidance_candidates 96
+```
+
+This script produces scenario bundles for:
+
+- `unconditional`
+- `two_story_compact` (two-story compact house)
+- `wide_lowrise_sloped` (wide low-rise house with sloped roof)
+- `connected_plausible_guided` (only connected plausible structures)
+
+## 11) Evaluation Sheets
+
+To keep reporting reproducible and fair, use:
+
+- `benchmark_sheet_template.csv`: canonical per-run comparison table for
+  unconditional vs conditional vs constraint-guided setups
+- `benchmark_sheet.md`: guidance on how to fill and interpret the sheet
+- `failure_gallery.md`: structured failure analysis log with visual evidence and hypotheses
 
 ## Running scripts
 

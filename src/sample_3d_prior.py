@@ -7,8 +7,8 @@ import os
 import numpy as np
 import torch
 
-from conditioning import sample_condition_ids_from_dataset
-from dataset import VoxelNPZDataset
+from conditional_sampling import ConditionalPriorSampler, HOUSE_CONDITION_PRESETS
+from constraint_guidance import ConstraintSpec
 from infer_3d import export_mesh_from_occ, render_projections, save_grid
 from model_loading import load_latent_prior, load_vqvae_model
 from utils import choose_device
@@ -37,8 +37,17 @@ def main() -> None:
     parser.add_argument("--top_p", type=float, default=1.0)
 
     parser.add_argument("--condition_values", type=str, default="")
+    parser.add_argument("--condition_json", type=str, default="")
+    parser.add_argument("--condition_preset", type=str, default="")
     parser.add_argument("--data_root", type=str, default=None)
     parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
+    parser.add_argument("--guidance_candidates", type=int, default=0)
+    parser.add_argument("--min_connectedness", type=float, default=0.85)
+    parser.add_argument("--max_unsupported_mass", type=float, default=0.08)
+    parser.add_argument("--max_component_count", type=int, default=2)
+    parser.add_argument("--min_symmetry", type=float, default=0.45)
+    parser.add_argument("--min_plausibility", type=float, default=0.55)
+    parser.add_argument("--require_compact", action="store_true")
 
     parser.add_argument("--export_projections", action="store_true")
     parser.add_argument("--export_meshes", action="store_true")
@@ -59,6 +68,11 @@ def main() -> None:
     if not (0.0 < args.top_p <= 1.0):
         raise SystemExit("--top_p must be in (0, 1]")
 
+    if args.guidance_candidates < 0:
+        raise SystemExit("--guidance_candidates must be >= 0")
+    if args.guidance_candidates and args.guidance_candidates < args.n_samples:
+        raise SystemExit("--guidance_candidates must be >= --n_samples")
+
     os.makedirs(args.out_dir, exist_ok=True)
     proj_dir = os.path.join(args.out_dir, "projections")
     mesh_dir = os.path.join(args.out_dir, "meshes")
@@ -74,53 +88,59 @@ def main() -> None:
     vqvae, _, vq_cfg = load_vqvae_model(args.vqvae_ckpt, device=device)
     prior, prior_ckpt, prior_cfg = load_latent_prior(args.prior_ckpt, device=device)
 
-    condition_mode = str(prior_cfg.get("condition_mode", "none"))
-    condition_fields = prior_ckpt.get("condition_fields", prior_cfg.get("condition_fields", []))
-    condition_bins = int(prior_cfg.get("condition_bins", 8))
+    sampler = ConditionalPriorSampler(prior=prior, vqvae=vqvae, prior_cfg=prior_cfg, prior_ckpt=prior_ckpt)
+    condition_dict = None
+    if args.condition_preset:
+        if args.condition_preset not in HOUSE_CONDITION_PRESETS:
+            valid = ",".join(sorted(HOUSE_CONDITION_PRESETS))
+            raise SystemExit(f"Unknown --condition_preset='{args.condition_preset}'. Available presets: {valid}")
+        condition_dict = HOUSE_CONDITION_PRESETS[args.condition_preset]
+    if args.condition_json:
+        condition_dict = json.loads(args.condition_json)
 
-    condition_ids = None
-    if prior.num_condition_tokens > 0:
-        if args.condition_values:
-            values = parse_condition_values(args.condition_values)
-            if len(values) != prior.num_condition_tokens:
-                raise SystemExit(
-                    f"--condition_values must contain {prior.num_condition_tokens} ids, got {len(values)}"
-                )
-            condition_ids = torch.as_tensor(values, dtype=torch.long).unsqueeze(0).repeat(args.n_samples, 1)
-        else:
-            if args.data_root is None:
-                raise SystemExit(
-                    "This prior expects condition tokens. Provide --condition_values or --data_root to sample them."
-                )
-            ds = VoxelNPZDataset(
-                os.path.join(args.data_root, f"{args.split}.npz"),
-                resolution=int(vq_cfg.get("resolution", 64)),
-                augment=False,
-            )
-            condition_ids = sample_condition_ids_from_dataset(
-                ds,
-                mode=condition_mode,
-                n_samples=args.n_samples,
-                fields=condition_fields,
-                num_bins=condition_bins,
-                seed=args.seed,
-            )
+    explicit_condition_ids = None
+    if args.condition_values:
+        values = parse_condition_values(args.condition_values)
+        if len(values) != prior.num_condition_tokens:
+            raise SystemExit(f"--condition_values must contain {prior.num_condition_tokens} ids, got {len(values)}")
+        explicit_condition_ids = torch.as_tensor(values, dtype=torch.long).unsqueeze(0).repeat(
+            max(args.n_samples, args.guidance_candidates),
+            1,
+        )
 
-    token_sequence = prior.sample(
+    guidance_spec = None
+    if args.guidance_candidates > 0:
+        guidance_spec = ConstraintSpec(
+            min_connectedness=float(args.min_connectedness),
+            max_unsupported_mass=float(args.max_unsupported_mass),
+            max_component_count=int(args.max_component_count),
+            min_symmetry=float(args.min_symmetry),
+            min_plausibility=float(args.min_plausibility),
+            require_compact=bool(args.require_compact),
+        )
+
+    sampled = sampler.sample(
         n_samples=args.n_samples,
-        condition_ids=condition_ids,
+        threshold=args.threshold,
         greedy=args.greedy,
         temperature=args.temperature,
         top_k=args.top_k,
         top_p=args.top_p,
         device=device,
+        condition=condition_dict,
+        condition_values=explicit_condition_ids,
+        data_root=args.data_root,
+        split=args.split,
+        seed=args.seed,
+        guidance_spec=guidance_spec,
+        guidance_candidates=args.guidance_candidates,
     )
-    logits = vqvae.decode_token_sequence(token_sequence)
-    occ = (torch.sigmoid(logits)[:, 0] > args.threshold).cpu().numpy().astype(np.uint8)
+    token_sequence = sampled.token_ids
+    occ = sampled.voxels.numpy().astype(np.uint8)
 
     condition_array = np.empty((0, 0), dtype=np.int32)
-    if condition_ids is not None:
-        condition_array = condition_ids.cpu().numpy().astype(np.int32)
+    if sampled.condition_ids is not None:
+        condition_array = sampled.condition_ids.cpu().numpy().astype(np.int32)
 
     np.savez_compressed(
         os.path.join(args.out_dir, "generated_samples.npz"),
@@ -128,6 +148,9 @@ def main() -> None:
         tokens=token_sequence.cpu().numpy().astype(np.int32),
         condition_ids=condition_array,
     )
+    if sampled.metrics:
+        with open(os.path.join(args.out_dir, "constraint_scores.json"), "w", encoding="utf-8") as f:
+            json.dump(sampled.metrics, f, indent=2, ensure_ascii=False)
 
     if args.export_projections:
         images = [render_projections(occ[i]) for i in range(occ.shape[0])]
@@ -154,9 +177,14 @@ def main() -> None:
         "temperature": float(args.temperature),
         "top_k": int(args.top_k),
         "top_p": float(args.top_p),
-        "condition_mode": condition_mode,
-        "condition_fields": condition_fields,
-        "condition_values": None if condition_ids is None else condition_ids[0].tolist(),
+        "condition_mode": str(prior_cfg.get("condition_mode", "none")),
+        "condition_fields": prior_ckpt.get("condition_fields", prior_cfg.get("condition_fields", [])),
+        "condition_values": None if sampled.condition_ids is None else sampled.condition_ids[0].tolist(),
+        "condition_preset": args.condition_preset or None,
+        "condition_json": condition_dict,
+        "constraint_guidance_enabled": bool(guidance_spec is not None),
+        "guidance_candidates": int(args.guidance_candidates),
+        "guidance_spec": None if guidance_spec is None else guidance_spec.__dict__,
         "resolution": int(vq_cfg.get("resolution", 64)),
         "codebook_size": int(vq_cfg.get("codebook_size", 512)),
         "token_grid_shape": list(vqvae.token_grid_shape),

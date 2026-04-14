@@ -77,12 +77,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--early_stopping_patience must be >= 0")
     if args.min_delta < 0:
         raise SystemExit("--min_delta must be >= 0")
-    if args.condition_mode not in {"none", "shape_stats", "npz_fields"}:
-        raise SystemExit("--condition_mode must be one of: none, shape_stats, npz_fields")
+    if args.condition_mode not in {"none", "shape_stats", "house_attributes", "npz_fields"}:
+        raise SystemExit("--condition_mode must be one of: none, shape_stats, house_attributes, npz_fields")
     if args.condition_mode == "npz_fields" and not parse_condition_fields(args.condition_fields):
         raise SystemExit("For --condition_mode npz_fields, pass --condition_fields")
-    if args.condition_mode == "shape_stats" and args.condition_bins <= 1:
-        raise SystemExit("--condition_bins must be > 1 for shape_stats conditioning")
+    if args.condition_mode in {"shape_stats", "house_attributes"} and args.condition_bins <= 1:
+        raise SystemExit("--condition_bins must be > 1 for shape_stats/house_attributes conditioning")
 
 
 def save_checkpoint(
@@ -135,7 +135,12 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--ff_mult", type=int, default=4)
 
-    parser.add_argument("--condition_mode", type=str, default="none", choices=["none", "shape_stats", "npz_fields"])
+    parser.add_argument(
+        "--condition_mode",
+        type=str,
+        default="none",
+        choices=["none", "shape_stats", "house_attributes", "npz_fields"],
+    )
     parser.add_argument("--condition_fields", type=str, default="")
     parser.add_argument("--condition_bins", type=int, default=8)
 

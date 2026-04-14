@@ -45,3 +45,35 @@ def test_npz_field_conditioning_schema_and_sampling(tmp_path: Path) -> None:
     assert vocab_sizes == [3, 2]
     assert sampled is not None
     assert sampled.shape == (2, 2)
+
+
+def test_house_attribute_conditioning_schema_and_sampling(tmp_path: Path) -> None:
+    voxels = np.zeros((4, 8, 8, 8), dtype=np.uint8)
+    voxels[0, 2:6, 2:6, :3] = 1
+    voxels[1, 1:7, 1:7, :5] = 1
+    voxels[2, 2:6, 1:7, :2] = 1
+    voxels[3, 1:7, 2:6, :6] = 1
+    out = tmp_path / "data_house.npz"
+    np.savez_compressed(out, voxels=voxels)
+
+    ds = VoxelNPZDataset(str(out), resolution=8, augment=False)
+    names, vocab_sizes = infer_condition_vocab_sizes(ds, mode="house_attributes", num_bins=6)
+    sampled = sample_condition_ids_from_dataset(
+        ds,
+        mode="house_attributes",
+        n_samples=3,
+        num_bins=6,
+        seed=11,
+    )
+
+    assert names == [
+        "stories_bin",
+        "footprint_bin",
+        "aspect_ratio_bin",
+        "roof_type",
+        "symmetry_flag",
+        "compactness_flag",
+    ]
+    assert vocab_sizes == [4, 6, 6, 3, 2, 2]
+    assert sampled is not None
+    assert sampled.shape == (3, 6)

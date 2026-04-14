@@ -222,6 +222,7 @@ class LatentTokenTransformer(nn.Module):
     def sample(
         self,
         n_samples: int,
+        condition: torch.Tensor | None = None,
         condition_ids: torch.Tensor | None = None,
         greedy: bool = False,
         temperature: float = 1.0,
@@ -234,7 +235,14 @@ class LatentTokenTransformer(nn.Module):
         if device is None:
             device = next(self.parameters()).device
 
+        if condition is not None:
+            if condition_ids is not None:
+                raise ValueError("Use either condition or condition_ids, not both")
+            condition_ids = condition
+
         if condition_ids is not None:
+            if condition_ids.ndim == 1:
+                condition_ids = condition_ids.unsqueeze(0).repeat(n_samples, 1)
             condition_ids = condition_ids.to(device=device, dtype=torch.long)
             if condition_ids.shape[0] != n_samples:
                 raise ValueError(
@@ -256,6 +264,7 @@ class LatentTokenTransformer(nn.Module):
     def sample_token_grid(
         self,
         n_samples: int,
+        condition: torch.Tensor | None = None,
         condition_ids: torch.Tensor | None = None,
         greedy: bool = False,
         temperature: float = 1.0,
@@ -265,6 +274,7 @@ class LatentTokenTransformer(nn.Module):
     ) -> torch.Tensor:
         tokens = self.sample(
             n_samples=n_samples,
+            condition=condition,
             condition_ids=condition_ids,
             greedy=greedy,
             temperature=temperature,

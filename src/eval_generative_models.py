@@ -8,7 +8,8 @@ import os
 import numpy as np
 import torch
 
-from conditioning import sample_condition_ids_from_dataset
+from conditional_sampling import ConditionalPriorSampler, HOUSE_CONDITION_PRESETS
+from constraint_guidance import ConstraintSpec
 from dataset import VoxelNPZDataset
 from generative_metrics import summarize_voxel_samples
 from infer_3d import export_mesh_from_occ, render_projections, save_grid
@@ -54,46 +55,6 @@ def save_sample_artifacts(
     return saved_meshes
 
 
-def build_prior_condition_ids(
-    prior,
-    prior_ckpt: dict,
-    prior_cfg: dict,
-    vq_cfg: dict,
-    n_samples: int,
-    data_root: str | None,
-    split: str,
-    condition_values: str,
-    seed: int,
-) -> torch.Tensor | None:
-    if prior.num_condition_tokens == 0:
-        return None
-
-    if condition_values:
-        values = parse_condition_values(condition_values)
-        if len(values) != prior.num_condition_tokens:
-            raise ValueError(f"Expected {prior.num_condition_tokens} condition ids, got {len(values)}")
-        return torch.as_tensor(values, dtype=torch.long).unsqueeze(0).repeat(n_samples, 1)
-
-    if data_root is None:
-        raise ValueError(
-            "Conditioned prior requires --data_root for empirical condition sampling, or --condition_values."
-        )
-
-    ds = VoxelNPZDataset(
-        os.path.join(data_root, f"{split}.npz"),
-        resolution=int(vq_cfg.get("resolution", 64)),
-        augment=False,
-    )
-    return sample_condition_ids_from_dataset(
-        ds,
-        mode=str(prior_cfg.get("condition_mode", "none")),
-        n_samples=n_samples,
-        fields=prior_ckpt.get("condition_fields", prior_cfg.get("condition_fields", [])),
-        num_bins=int(prior_cfg.get("condition_bins", 8)),
-        seed=seed,
-    )
-
-
 @torch.no_grad()
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -118,6 +79,15 @@ def main() -> None:
     parser.add_argument("--top_k", type=int, default=32)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--condition_values", type=str, default="")
+    parser.add_argument("--condition_json", type=str, default="")
+    parser.add_argument("--condition_preset", type=str, default="")
+    parser.add_argument("--guidance_candidates", type=int, default=0)
+    parser.add_argument("--min_connectedness", type=float, default=0.85)
+    parser.add_argument("--max_unsupported_mass", type=float, default=0.08)
+    parser.add_argument("--max_component_count", type=int, default=2)
+    parser.add_argument("--min_symmetry", type=float, default=0.45)
+    parser.add_argument("--min_plausibility", type=float, default=0.55)
+    parser.add_argument("--require_compact", action="store_true")
     args = parser.parse_args()
 
     if args.n_samples <= 0:
@@ -136,6 +106,10 @@ def main() -> None:
         raise SystemExit("--top_p must be in (0, 1]")
     if args.temperature <= 0:
         raise SystemExit("--temperature must be > 0")
+    if args.guidance_candidates < 0:
+        raise SystemExit("--guidance_candidates must be >= 0")
+    if args.guidance_candidates and args.guidance_candidates < args.n_samples:
+        raise SystemExit("--guidance_candidates must be >= --n_samples")
     if args.vae_ckpt is None and (args.vqvae_ckpt is None or args.prior_ckpt is None):
         raise SystemExit("Provide at least --vae_ckpt or both --vqvae_ckpt and --prior_ckpt")
 
@@ -179,6 +153,7 @@ def main() -> None:
         metrics.update(
             {
                 "model": "vae_gaussian",
+                "regime": "unconditional",
                 "sampling_mode": "gaussian",
                 "saved_meshes": int(saved_meshes),
                 "resolution": int(vae_cfg.get("resolution", 64)),
@@ -190,17 +165,37 @@ def main() -> None:
         vqvae, _, vq_cfg = load_vqvae_model(args.vqvae_ckpt, device=device)
         prior, prior_ckpt, prior_cfg = load_latent_prior(args.prior_ckpt, device=device)
         prior_modes = parse_modes(args.prior_modes)
-        condition_ids = build_prior_condition_ids(
-            prior=prior,
-            prior_ckpt=prior_ckpt,
-            prior_cfg=prior_cfg,
-            vq_cfg=vq_cfg,
-            n_samples=args.n_samples,
-            data_root=args.data_root,
-            split=args.reference_split,
-            condition_values=args.condition_values,
-            seed=args.seed,
-        )
+        sampler = ConditionalPriorSampler(prior=prior, vqvae=vqvae, prior_cfg=prior_cfg, prior_ckpt=prior_ckpt)
+
+        condition_dict = None
+        if args.condition_preset:
+            if args.condition_preset not in HOUSE_CONDITION_PRESETS:
+                valid = ",".join(sorted(HOUSE_CONDITION_PRESETS))
+                raise SystemExit(f"Unknown --condition_preset='{args.condition_preset}'. Available presets: {valid}")
+            condition_dict = HOUSE_CONDITION_PRESETS[args.condition_preset]
+        if args.condition_json:
+            condition_dict = json.loads(args.condition_json)
+
+        explicit_condition_ids = None
+        if args.condition_values:
+            values = parse_condition_values(args.condition_values)
+            if len(values) != prior.num_condition_tokens:
+                raise ValueError(f"Expected {prior.num_condition_tokens} condition ids, got {len(values)}")
+            explicit_condition_ids = torch.as_tensor(values, dtype=torch.long).unsqueeze(0).repeat(
+                max(args.n_samples, args.guidance_candidates),
+                1,
+            )
+
+        guidance_spec = None
+        if args.guidance_candidates > 0:
+            guidance_spec = ConstraintSpec(
+                min_connectedness=float(args.min_connectedness),
+                max_unsupported_mass=float(args.max_unsupported_mass),
+                max_component_count=int(args.max_component_count),
+                min_symmetry=float(args.min_symmetry),
+                min_plausibility=float(args.min_plausibility),
+                require_compact=bool(args.require_compact),
+            )
 
         decode_settings = {
             "greedy": dict(greedy=True, temperature=1.0, top_k=0, top_p=1.0),
@@ -210,15 +205,22 @@ def main() -> None:
         }
 
         for mode in prior_modes:
-            token_sequence = prior.sample(
+            base = decode_settings[mode]
+            sampled_unconditional = sampler.sample(
                 n_samples=args.n_samples,
-                condition_ids=condition_ids,
                 device=device,
-                **decode_settings[mode],
+                threshold=args.threshold,
+                data_root=args.data_root,
+                split=args.reference_split,
+                seed=args.seed,
+                condition=None,
+                condition_values=None,
+                guidance_spec=None,
+                guidance_candidates=0,
+                **base,
             )
-            logits = vqvae.decode_token_sequence(token_sequence)
-            occ = (torch.sigmoid(logits)[:, 0] > args.threshold).cpu().numpy().astype(np.uint8)
-            prefix = f"vqvae_transformer_{mode}"
+            occ = sampled_unconditional.voxels.numpy().astype(np.uint8)
+            prefix = f"vqvae_transformer_{mode}_unconditional"
             saved_meshes = save_sample_artifacts(
                 occ,
                 out_dir=args.out_dir,
@@ -237,6 +239,7 @@ def main() -> None:
             metrics.update(
                 {
                     "model": "vqvae_transformer",
+                    "regime": "unconditional",
                     "sampling_mode": mode,
                     "saved_meshes": int(saved_meshes),
                     "resolution": int(vq_cfg.get("resolution", 64)),
@@ -245,6 +248,92 @@ def main() -> None:
                 }
             )
             rows.append(metrics)
+
+            if condition_dict is not None or explicit_condition_ids is not None:
+                sampled_conditional = sampler.sample(
+                    n_samples=args.n_samples,
+                    device=device,
+                    threshold=args.threshold,
+                    seed=args.seed,
+                    split=args.reference_split,
+                    data_root=args.data_root,
+                    condition=condition_dict,
+                    condition_values=explicit_condition_ids,
+                    guidance_spec=None,
+                    guidance_candidates=0,
+                    **base,
+                )
+                occ_c = sampled_conditional.voxels.numpy().astype(np.uint8)
+                prefix_c = f"vqvae_transformer_{mode}_conditional"
+                save_sample_artifacts(
+                    occ_c,
+                    out_dir=args.out_dir,
+                    prefix=prefix_c,
+                    grid_cols=args.grid_cols,
+                    export_meshes=args.export_meshes,
+                    n_meshes=args.n_meshes,
+                )
+                metrics_c = summarize_voxel_samples(
+                    occ_c,
+                    reference_voxels=reference_voxels,
+                    max_pairs=args.max_pairs,
+                    max_reference=args.max_reference,
+                    seed=args.seed,
+                )
+                metrics_c.update(
+                    {
+                        "model": "vqvae_transformer",
+                        "regime": "conditional",
+                        "sampling_mode": mode,
+                        "resolution": int(vq_cfg.get("resolution", 64)),
+                        "token_grid_shape": "x".join(str(v) for v in vqvae.token_grid_shape),
+                        "codebook_size": int(vq_cfg.get("codebook_size", 512)),
+                    }
+                )
+                rows.append(metrics_c)
+
+                if guidance_spec is not None:
+                    sampled_guided = sampler.sample(
+                        n_samples=args.n_samples,
+                        device=device,
+                        threshold=args.threshold,
+                        seed=args.seed,
+                        split=args.reference_split,
+                        data_root=args.data_root,
+                        condition=condition_dict,
+                        condition_values=explicit_condition_ids,
+                        guidance_spec=guidance_spec,
+                        guidance_candidates=args.guidance_candidates,
+                        **base,
+                    )
+                    occ_g = sampled_guided.voxels.numpy().astype(np.uint8)
+                    prefix_g = f"vqvae_transformer_{mode}_guided"
+                    save_sample_artifacts(
+                        occ_g,
+                        out_dir=args.out_dir,
+                        prefix=prefix_g,
+                        grid_cols=args.grid_cols,
+                        export_meshes=args.export_meshes,
+                        n_meshes=args.n_meshes,
+                    )
+                    metrics_g = summarize_voxel_samples(
+                        occ_g,
+                        reference_voxels=reference_voxels,
+                        max_pairs=args.max_pairs,
+                        max_reference=args.max_reference,
+                        seed=args.seed,
+                    )
+                    metrics_g.update(
+                        {
+                            "model": "vqvae_transformer",
+                            "regime": "constraint_guided",
+                            "sampling_mode": mode,
+                            "resolution": int(vq_cfg.get("resolution", 64)),
+                            "token_grid_shape": "x".join(str(v) for v in vqvae.token_grid_shape),
+                            "codebook_size": int(vq_cfg.get("codebook_size", 512)),
+                        }
+                    )
+                    rows.append(metrics_g)
 
     json_path = os.path.join(args.out_dir, "benchmark.json")
     with open(json_path, "w", encoding="utf-8") as f:

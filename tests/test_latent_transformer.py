@@ -54,6 +54,21 @@ def test_latent_transformer_sampling_returns_valid_token_ids() -> None:
     assert samples.max().item() < 16
 
 
+def test_latent_transformer_sample_accepts_condition_alias() -> None:
+    model = LatentTokenTransformer(
+        codebook_size=16,
+        token_grid_shape=(2, 2, 2),
+        d_model=32,
+        nhead=4,
+        num_layers=2,
+        dropout=0.0,
+        condition_vocab_sizes=[4, 3],
+    )
+    condition = torch.tensor([1, 2], dtype=torch.long)
+    samples = model.sample(n_samples=3, condition=condition, greedy=True)
+    assert samples.shape == (3, 8)
+
+
 def test_sampling_helpers_respect_top_k_and_greedy() -> None:
     logits = torch.tensor([[0.1, 0.2, 0.3, 10.0]], dtype=torch.float32)
     filtered = filter_sampling_logits(logits, top_k=2, top_p=1.0)

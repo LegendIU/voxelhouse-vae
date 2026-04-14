@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from dataset import VoxelNPZDataset
+from house_attributes import HOUSE_ATTRIBUTE_FIELD_NAMES, HouseAttributeSpec, extract_house_attribute_ids
 
 
 SHAPE_STAT_FIELD_NAMES = (
@@ -77,6 +78,9 @@ def infer_condition_vocab_sizes(
     if mode == "shape_stats":
         _require_num_bins(num_bins)
         return list(SHAPE_STAT_FIELD_NAMES), [int(num_bins)] * len(SHAPE_STAT_FIELD_NAMES)
+    if mode == "house_attributes":
+        spec = HouseAttributeSpec(ratio_bins=int(num_bins))
+        return list(HOUSE_ATTRIBUTE_FIELD_NAMES), spec.vocab_sizes()
     if mode == "npz_fields":
         field_names = parse_condition_fields(fields)
         if not field_names:
@@ -112,6 +116,8 @@ def gather_condition_ids(
         return None
     if mode == "shape_stats":
         return build_shape_condition_ids(batch_voxels, num_bins=num_bins)
+    if mode == "house_attributes":
+        return extract_house_attribute_ids(batch_voxels, ratio_bins=int(num_bins))
     if mode == "npz_fields":
         if batch_indices.ndim != 1:
             raise ValueError(f"Expected batch_indices with shape [B], got {tuple(batch_indices.shape)}")

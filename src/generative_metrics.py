@@ -4,6 +4,7 @@ from typing import Iterable
 
 import numpy as np
 
+from constraint_guidance import score_samples
 from eval_3d_recon import connected_components_stats_single
 
 
@@ -118,6 +119,16 @@ def summarize_voxel_samples(
         "num_components": float(np.mean(num_components)),
         "largest_component_ratio": float(np.mean(lcc_ratios)),
     }
+    validity = score_samples(occ)
+    out.update(
+        {
+            "connectedness": float(np.mean([m["connectedness"] for m in validity])),
+            "unsupported_mass": float(np.mean([m["unsupported_mass"] for m in validity])),
+            "component_count": float(np.mean([m["component_count"] for m in validity])),
+            "symmetry_proxy": float(np.mean([m["symmetry_proxy"] for m in validity])),
+            "plausibility_score": float(np.mean([m["plausibility_score"] for m in validity])),
+        }
+    )
     out.update(pairwise_diversity_stats(occ, max_pairs=max_pairs, seed=seed))
 
     if reference_voxels is not None:
