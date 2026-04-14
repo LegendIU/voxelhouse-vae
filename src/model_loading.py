@@ -7,8 +7,16 @@ from model_3d import VAE3D
 from vqvae_3d import VQVAE3D
 
 
+def _load_checkpoint(ckpt_path: str) -> dict:
+    try:
+        return torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        # Backward compatibility with older PyTorch versions.
+        return torch.load(ckpt_path, map_location="cpu")
+
+
 def load_vae_model(ckpt_path: str, device: torch.device) -> tuple[VAE3D, dict, dict]:
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = _load_checkpoint(ckpt_path)
     cfg = ckpt.get("config", {})
     model = VAE3D(
         resolution=int(cfg.get("resolution", 64)),
@@ -21,7 +29,7 @@ def load_vae_model(ckpt_path: str, device: torch.device) -> tuple[VAE3D, dict, d
 
 
 def load_vqvae_model(ckpt_path: str, device: torch.device) -> tuple[VQVAE3D, dict, dict]:
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = _load_checkpoint(ckpt_path)
     cfg = ckpt.get("config", {})
     model = VQVAE3D(
         resolution=int(cfg.get("resolution", 64)),
@@ -36,7 +44,7 @@ def load_vqvae_model(ckpt_path: str, device: torch.device) -> tuple[VQVAE3D, dic
 
 
 def load_latent_prior(ckpt_path: str, device: torch.device) -> tuple[LatentTokenTransformer, dict, dict]:
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = _load_checkpoint(ckpt_path)
     cfg = ckpt.get("config", {})
     token_grid_shape = tuple(int(v) for v in ckpt.get("token_grid_shape", cfg.get("token_grid_shape", (4, 4, 4))))
     condition_vocab_sizes = [int(v) for v in ckpt.get("condition_vocab_sizes", cfg.get("condition_vocab_sizes", []))]

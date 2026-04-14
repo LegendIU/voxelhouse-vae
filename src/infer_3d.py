@@ -17,6 +17,14 @@ if TYPE_CHECKING:
 _MESH_EXPORT_WARNED = False
 
 
+def _load_checkpoint(ckpt_path: str) -> dict:
+    try:
+        return torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        # Backward compatibility with older PyTorch versions.
+        return torch.load(ckpt_path, map_location="cpu")
+
+
 def mc_vertices_faces(occ: np.ndarray):
     occ = occ.astype(np.float32)
     try:
@@ -216,7 +224,7 @@ def main():
 
     device = choose_device(args.device)
 
-    ckpt = torch.load(args.ckpt, map_location="cpu")
+    ckpt = _load_checkpoint(args.ckpt)
     cfg = ckpt.get("config", {})
 
     resolution = int(cfg.get("resolution", 64))
