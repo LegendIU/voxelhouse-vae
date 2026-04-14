@@ -3,6 +3,8 @@
 
 # Model outputs and generated artifacts
 /outputs/
+/mlruns/
+/out_smoke_mlops/
 
 # Python virtual environment
 /.venv/

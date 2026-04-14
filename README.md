@@ -14,6 +14,74 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+## Docker Quick Start
+
+The repository includes a full Docker setup for CPU and GPU workflows:
+
+- `Dockerfile.cpu` and `docker-compose.yml` for CPU
+- `Dockerfile.gpu` and `docker-compose --profile gpu ...` for CUDA hosts
+- ready services for interactive dev shell, smoke pipeline and MLflow UI
+
+### 1) Build images
+
+CPU:
+
+```bash
+docker compose build dev-cpu
+```
+
+GPU (requires NVIDIA Container Toolkit):
+
+```bash
+docker compose --profile gpu build dev-gpu
+```
+
+### 2) Open dev shell
+
+CPU:
+
+```bash
+docker compose run --rm dev-cpu
+```
+
+GPU:
+
+```bash
+docker compose --profile gpu run --rm dev-gpu
+```
+
+Inside the container the project is mounted at `/workspace`, and `PYTHONPATH` is already set to `/workspace/src`.
+
+### 3) Run smoke pipeline
+
+CPU:
+
+```bash
+docker compose run --rm smoke-cpu
+```
+
+GPU:
+
+```bash
+docker compose --profile gpu run --rm smoke-gpu
+```
+
+### 4) Run MLflow UI
+
+```bash
+mkdir -p mlruns
+docker compose up mlflow
+```
+
+Then open [http://localhost:5000](http://localhost:5000).
+
+### Optional shortcuts
+
+You can also use:
+
+- `bash scripts/docker_run.sh <action>`
+- `make docker-*` targets in `Makefile`
+
 ## Project Layout
 
 - `src/build_voxel_dataset.py`: voxelizes meshes and creates `train/val/test` `.npz` files
@@ -259,6 +327,55 @@ ruff check src/
 ```
 
 CI runs tests and ruff on every push/PR (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+
+## MLOps v1
+
+The repository includes a lightweight MLOps baseline:
+
+- optional MLflow tracking in training/evaluation scripts
+- reproducible smoke pipeline (`scripts/mlops_smoke_pipeline.sh`)
+- quality gate checks (`src/check_quality_gate.py` with `mlops/quality_gates.json`)
+
+### MLflow tracking
+
+Supported scripts expose:
+
+- `--mlflow`
+- `--mlflow_experiment`
+- `--mlflow_tracking_uri`
+
+Example:
+
+```bash
+python src/train_latent_prior.py \
+  --vqvae_ckpt outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt \
+  --data_root data/houses3k_vox64 \
+  --out_dir outputs/latent_prior \
+  --mlflow \
+  --mlflow_experiment voxelhouse-vae
+```
+
+### Quality gate
+
+After benchmarking:
+
+```bash
+python src/check_quality_gate.py \
+  --benchmark_json outputs/generative_benchmark/benchmark.json \
+  --gate_config mlops/quality_gates.json
+```
+
+The command exits with non-zero status if minimum quality constraints are violated.
+
+### Smoke pipeline
+
+For fast end-to-end validation in CI or locally:
+
+```bash
+bash scripts/mlops_smoke_pipeline.sh .
+```
+
+It creates a tiny synthetic dataset, runs short VQ-VAE + prior training, runs generative benchmark, then validates quality gates.
 
 ## Notes
 

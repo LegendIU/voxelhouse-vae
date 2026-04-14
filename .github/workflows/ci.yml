@@ -36,3 +36,9 @@ jobs:
         run: |
           source .venv/bin/activate
           ruff check src/
+
+      - name: MLOps smoke pipeline
+        if: matrix.python-version == '3.10'
+        run: |
+          source .venv/bin/activate
+          bash scripts/mlops_smoke_pipeline.sh .
