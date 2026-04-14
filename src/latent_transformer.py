@@ -37,13 +37,38 @@ def filter_sampling_logits(
     return torch.where(finite_rows, filtered, logits)
 
 
+def apply_repetition_penalty(
+    logits: torch.Tensor,
+    generated_tokens: torch.Tensor | None = None,
+    penalty: float = 1.0,
+) -> torch.Tensor:
+    if generated_tokens is None or generated_tokens.numel() == 0 or penalty <= 1.0:
+        return logits
+    adjusted = logits.clone()
+    for row_idx in range(generated_tokens.shape[0]):
+        used = torch.unique(generated_tokens[row_idx].long())
+        if used.numel() == 0:
+            continue
+        row_logits = adjusted[row_idx, used]
+        penalized = torch.where(row_logits >= 0.0, row_logits / penalty, row_logits * penalty)
+        adjusted[row_idx, used] = penalized
+    return adjusted
+
+
 def sample_from_logits(
     logits: torch.Tensor,
     greedy: bool = False,
     temperature: float = 1.0,
     top_k: int = 0,
     top_p: float = 1.0,
+    generated_tokens: torch.Tensor | None = None,
+    repetition_penalty: float = 1.0,
 ) -> torch.Tensor:
+    logits = apply_repetition_penalty(
+        logits,
+        generated_tokens=generated_tokens,
+        penalty=float(repetition_penalty),
+    )
     if greedy:
         return torch.argmax(logits, dim=-1)
     if temperature <= 0:
@@ -228,6 +253,7 @@ class LatentTokenTransformer(nn.Module):
         temperature: float = 1.0,
         top_k: int = 0,
         top_p: float = 1.0,
+        repetition_penalty: float = 1.0,
         device: torch.device | None = None,
     ) -> torch.Tensor:
         if n_samples <= 0:
@@ -251,6 +277,7 @@ class LatentTokenTransformer(nn.Module):
 
         tokens = torch.empty(n_samples, self.num_latent_tokens, dtype=torch.long, device=device)
         for step in range(self.num_latent_tokens):
+            prefix_tokens = tokens[:, :step] if step > 0 else None
             logits = self.next_token_logits(tokens[:, :step], condition_ids=condition_ids)
             tokens[:, step] = sample_from_logits(
                 logits,
@@ -258,6 +285,8 @@ class LatentTokenTransformer(nn.Module):
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                generated_tokens=prefix_tokens,
+                repetition_penalty=repetition_penalty,
             )
         return tokens
 
@@ -270,6 +299,7 @@ class LatentTokenTransformer(nn.Module):
         temperature: float = 1.0,
         top_k: int = 0,
         top_p: float = 1.0,
+        repetition_penalty: float = 1.0,
         device: torch.device | None = None,
     ) -> torch.Tensor:
         tokens = self.sample(
@@ -280,6 +310,7 @@ class LatentTokenTransformer(nn.Module):
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            repetition_penalty=repetition_penalty,
             device=device,
         )
         return tokens.view(n_samples, *self.token_grid_shape)

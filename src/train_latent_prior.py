@@ -93,6 +93,7 @@ def save_checkpoint(
     args: argparse.Namespace,
     epoch: int,
     best_val_loss: float,
+    best_val_perplexity: float,
     best_val_accuracy: float,
     token_grid_shape: tuple[int, int, int],
     condition_fields: list[str],
@@ -107,6 +108,7 @@ def save_checkpoint(
             "config": vars(args),
             "epoch": int(epoch),
             "best_val_loss": float(best_val_loss),
+            "best_val_perplexity": float(best_val_perplexity),
             "best_val_accuracy": float(best_val_accuracy),
             "token_grid_shape": tuple(int(v) for v in token_grid_shape),
             "condition_fields": condition_fields,
@@ -276,10 +278,12 @@ def main() -> None:
                 "val_perplexity",
                 "val_token_accuracy",
                 "best_val_loss_so_far",
+                "best_val_perplexity_so_far",
             ]
         )
 
     best_val_loss = float("inf")
+    best_val_perplexity = float("inf")
     best_val_accuracy = 0.0
     epochs_without_improvement = 0
     history: list[dict[str, float]] = []
@@ -363,17 +367,19 @@ def main() -> None:
         improved = val_loss < (best_val_loss - args.min_delta)
         if improved:
             best_val_loss = val_loss
+            best_val_perplexity = val_perplexity
             best_val_accuracy = val_accuracy
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
             best_val_accuracy = max(best_val_accuracy, val_accuracy)
+            best_val_perplexity = min(best_val_perplexity, val_perplexity)
 
         print(
             f"Epoch {epoch:03d} | lr {lr_cur:.2e} | "
             f"train loss {train_loss:.4f}, ppl {train_perplexity:.2f}, acc {train_accuracy:.4f} | "
             f"val loss {val_loss:.4f}, ppl {val_perplexity:.2f}, acc {val_accuracy:.4f} | "
-            f"best val loss {best_val_loss:.4f}"
+            f"best val loss {best_val_loss:.4f}, best ppl {best_val_perplexity:.2f}"
         )
 
         with open(metrics_path, "a", newline="", encoding="utf-8") as f:
@@ -388,6 +394,7 @@ def main() -> None:
                     val_perplexity,
                     val_accuracy,
                     best_val_loss,
+                    best_val_perplexity,
                 ]
             )
 
@@ -411,6 +418,7 @@ def main() -> None:
             args=args,
             epoch=epoch,
             best_val_loss=best_val_loss,
+            best_val_perplexity=best_val_perplexity,
             best_val_accuracy=best_val_accuracy,
             token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
             condition_fields=condition_fields,
@@ -427,6 +435,22 @@ def main() -> None:
                 args=args,
                 epoch=epoch,
                 best_val_loss=best_val_loss,
+                best_val_perplexity=best_val_perplexity,
+                best_val_accuracy=best_val_accuracy,
+                token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
+                condition_fields=condition_fields,
+                condition_vocab_sizes=condition_vocab_sizes,
+                codebook_size=int(vq_cfg.get("codebook_size", 512)),
+            )
+            save_checkpoint(
+                os.path.join(run_dir, "best_by_val_ppl.pt"),
+                model=prior,
+                optimizer=opt,
+                scheduler=sched,
+                args=args,
+                epoch=epoch,
+                best_val_loss=best_val_loss,
+                best_val_perplexity=best_val_perplexity,
                 best_val_accuracy=best_val_accuracy,
                 token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
                 condition_fields=condition_fields,
@@ -443,6 +467,7 @@ def main() -> None:
                 args=args,
                 epoch=epoch,
                 best_val_loss=best_val_loss,
+                best_val_perplexity=best_val_perplexity,
                 best_val_accuracy=best_val_accuracy,
                 token_grid_shape=tuple(int(v) for v in vqvae.token_grid_shape),
                 condition_fields=condition_fields,
@@ -503,9 +528,12 @@ def main() -> None:
 
     summary = {
         "best_val_loss": float(best_val_loss),
+        "best_val_perplexity": float(best_val_perplexity),
         "best_val_accuracy": float(best_val_accuracy),
         "epochs_completed": int(len(history)),
         "stopped_early": bool(len(history) < args.epochs),
+        "condition_mode": str(args.condition_mode),
+        "condition_fields": condition_fields,
     }
     save_json(summary, os.path.join(run_dir, "training_summary.json"))
 

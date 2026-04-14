@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import os
 
 import torch
 
@@ -98,7 +99,7 @@ class ConditionalPriorSampler:
         if data_root is None:
             raise ValueError("Conditioned prior requires condition, condition_values or data_root for empirical sampling.")
         ds = VoxelNPZDataset(
-            f"{data_root}/{split}.npz",
+            os.path.join(data_root, f"{split}.npz"),
             resolution=int(getattr(self.vqvae, "resolution", self.prior_cfg.get("resolution", 64))),
             augment=False,
         )
@@ -120,6 +121,7 @@ class ConditionalPriorSampler:
         temperature: float = 1.0,
         top_k: int = 0,
         top_p: float = 1.0,
+        repetition_penalty: float = 1.0,
         device: torch.device | None = None,
         condition: dict[str, Any] | None = None,
         condition_values: torch.Tensor | None = None,
@@ -147,6 +149,7 @@ class ConditionalPriorSampler:
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            repetition_penalty=repetition_penalty,
             device=device,
         )
         logits = self.vqvae.decode_token_sequence(token_ids)

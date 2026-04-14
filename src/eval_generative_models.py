@@ -78,6 +78,7 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_k", type=int, default=32)
     parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
     parser.add_argument("--condition_values", type=str, default="")
     parser.add_argument("--condition_json", type=str, default="")
     parser.add_argument("--condition_preset", type=str, default="")
@@ -106,6 +107,8 @@ def main() -> None:
         raise SystemExit("--top_p must be in (0, 1]")
     if args.temperature <= 0:
         raise SystemExit("--temperature must be > 0")
+    if args.repetition_penalty < 1.0:
+        raise SystemExit("--repetition_penalty must be >= 1.0")
     if args.guidance_candidates < 0:
         raise SystemExit("--guidance_candidates must be >= 0")
     if args.guidance_candidates and args.guidance_candidates < args.n_samples:
@@ -217,6 +220,7 @@ def main() -> None:
                 condition_values=None,
                 guidance_spec=None,
                 guidance_candidates=0,
+                repetition_penalty=args.repetition_penalty,
                 **base,
             )
             occ = sampled_unconditional.voxels.numpy().astype(np.uint8)
@@ -245,6 +249,10 @@ def main() -> None:
                     "resolution": int(vq_cfg.get("resolution", 64)),
                     "token_grid_shape": "x".join(str(v) for v in vqvae.token_grid_shape),
                     "codebook_size": int(vq_cfg.get("codebook_size", 512)),
+                    "temperature": float(base["temperature"]),
+                    "top_k": int(base["top_k"]),
+                    "top_p": float(base["top_p"]),
+                    "repetition_penalty": float(args.repetition_penalty),
                 }
             )
             rows.append(metrics)
@@ -261,6 +269,7 @@ def main() -> None:
                     condition_values=explicit_condition_ids,
                     guidance_spec=None,
                     guidance_candidates=0,
+                    repetition_penalty=args.repetition_penalty,
                     **base,
                 )
                 occ_c = sampled_conditional.voxels.numpy().astype(np.uint8)
@@ -304,6 +313,7 @@ def main() -> None:
                         condition_values=explicit_condition_ids,
                         guidance_spec=guidance_spec,
                         guidance_candidates=args.guidance_candidates,
+                        repetition_penalty=args.repetition_penalty,
                         **base,
                     )
                     occ_g = sampled_guided.voxels.numpy().astype(np.uint8)
@@ -346,6 +356,29 @@ def main() -> None:
             writer.writeheader()
             for row in rows:
                 writer.writerow(row)
+
+        summary_fields = [
+            "model",
+            "regime",
+            "sampling_mode",
+            "valid_ratio",
+            "unique_ratio",
+            "occupancy_mean",
+            "occupancy_std",
+            "connectedness",
+            "unsupported_mass",
+            "component_count",
+            "symmetry_proxy",
+            "plausibility_score",
+            "pairwise_iou_diversity",
+            "reference_nn_iou_mean",
+        ]
+        summary_fields = [field for field in summary_fields if any(field in row for row in rows)]
+        with open(os.path.join(args.out_dir, "comparison_summary.csv"), "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=summary_fields)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in summary_fields})
 
     print(json.dumps(rows, indent=2))
 
