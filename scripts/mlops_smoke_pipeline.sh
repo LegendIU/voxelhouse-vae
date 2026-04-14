@@ -2,16 +2,17 @@
 set -euo pipefail
 
 ROOT_DIR="${1:-.}"
+ABS_ROOT="$(cd "${ROOT_DIR}" && pwd)"
 WORK_DIR="${ROOT_DIR}/out_smoke_mlops"
 DATA_DIR="${WORK_DIR}/tiny_data"
 VQ_OUT="${WORK_DIR}/vqvae"
 PRIOR_OUT="${WORK_DIR}/prior"
 BENCH_OUT="${WORK_DIR}/benchmark"
-MLFLOW_TRACKING_URI="sqlite:////workspace/mlruns/mlflow.db"
+MLFLOW_TRACKING_URI="sqlite:///${ABS_ROOT}/mlruns/mlflow.db"
 MLFLOW_EXPERIMENT="voxelhouse-vae-smoke"
 
 mkdir -p "${WORK_DIR}"
-mkdir -p "${ROOT_DIR}/mlruns/artifacts"
+mkdir -p "${ABS_ROOT}/mlruns/artifacts"
 
 PYTHONPATH="${ROOT_DIR}/src" python3 "${ROOT_DIR}/src/create_tiny_dataset.py" \
   --out_dir "${DATA_DIR}" \
@@ -63,7 +64,7 @@ PYTHONPATH="${ROOT_DIR}/src" python3 "${ROOT_DIR}/src/train_latent_prior.py" \
   --mlflow_experiment "${MLFLOW_EXPERIMENT}" \
   --mlflow_tracking_uri "${MLFLOW_TRACKING_URI}"
 
-PRIOR_BEST="$(ls -1 "${PRIOR_OUT}"/run_*/best.pt | head -n 1)"
+PRIOR_BEST="$(ls -1 "${PRIOR_OUT}"/latent_prior_*/best.pt | head -n 1)"
 
 PYTHONPATH="${ROOT_DIR}/src" python3 "${ROOT_DIR}/src/eval_generative_models.py" \
   --out_dir "${BENCH_OUT}" \
