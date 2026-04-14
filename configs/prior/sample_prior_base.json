@@ -1,0 +1,18 @@
+{
+  "prior_ckpt": "outputs/latent_prior/run_YYYYMMDD_HHMMSS/best.pt",
+  "vqvae_ckpt": "outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt",
+  "out_dir": "outputs/prior_samples/base",
+  "n_samples": 64,
+  "n_meshes": 16,
+  "threshold": 0.55,
+  "device": "cuda",
+  "seed": 42,
+  "temperature": 1.0,
+  "top_k": 32,
+  "top_p": 0.9,
+  "data_root": "data/houses3k_vox64",
+  "split": "test",
+  "export_projections": true,
+  "export_meshes": true,
+  "grid_cols": 8
+}

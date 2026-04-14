@@ -1,0 +1,12 @@
+{
+  "prior_ckpt": "outputs/latent_prior/run_YYYYMMDD_HHMMSS/best.pt",
+  "vqvae_ckpt": "outputs/vqvae3d/run_YYYYMMDD_HHMMSS/best.pt",
+  "data_root": "data/houses3k_vox64",
+  "split": "test",
+  "batch_size": 8,
+  "device": "cuda",
+  "num_workers": 2,
+  "pin_memory": true,
+  "amp": true,
+  "out_dir": "outputs/latent_prior_eval/base"
+}
