@@ -180,7 +180,8 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     scaler = make_grad_scaler(use_amp)
 
-    generator = torch.Generator(); generator.manual_seed(args.seed)
+    generator = torch.Generator()
+    generator.manual_seed(args.seed)
     worker_init_fn = seed_worker if args.num_workers > 0 else None
     persistent_workers = bool(args.num_workers > 0)
     train_loader = DataLoader(IndexedDataset(train_ds), batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=pin_memory, worker_init_fn=worker_init_fn, persistent_workers=persistent_workers, generator=generator)
@@ -236,10 +237,16 @@ def main() -> None:
             if args.grad_clip > 0:
                 scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(prior.parameters(), args.grad_clip)
-            scaler.step(opt); scaler.update()
-            train_loss += float(loss.item()); train_ppl += float(aux["perplexity"]); train_acc += float(aux["token_accuracy"]); n_train += 1
+            scaler.step(opt)
+            scaler.update()
+            train_loss += float(loss.item())
+            train_ppl += float(aux["perplexity"])
+            train_acc += float(aux["token_accuracy"])
+            n_train += 1
         sched.step()
-        train_loss /= max(n_train, 1); train_ppl /= max(n_train, 1); train_acc /= max(n_train, 1)
+        train_loss /= max(n_train, 1)
+        train_ppl /= max(n_train, 1)
+        train_acc /= max(n_train, 1)
         lr_cur = float(opt.param_groups[0]["lr"])
 
         prior.eval()
@@ -253,8 +260,13 @@ def main() -> None:
                 condition_ids = gather_condition_ids(val_ds, idx, x, mode=args.condition_mode, fields=condition_fields, num_bins=args.condition_bins)
                 with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                     loss, aux = prior.compute_loss(token_ids, condition_ids=condition_ids)
-                val_loss += float(loss.item()); val_ppl += float(aux["perplexity"]); val_acc += float(aux["token_accuracy"]); n_val += 1
-        val_loss /= max(n_val, 1); val_ppl /= max(n_val, 1); val_acc /= max(n_val, 1)
+                val_loss += float(loss.item())
+                val_ppl += float(aux["perplexity"])
+                val_acc += float(aux["token_accuracy"])
+                n_val += 1
+        val_loss /= max(n_val, 1)
+        val_ppl /= max(n_val, 1)
+        val_acc /= max(n_val, 1)
 
         improved_loss = val_loss < (best_val_loss - args.min_delta)
         improved_ppl = val_ppl < best_val_perplexity

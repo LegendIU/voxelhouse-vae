@@ -97,8 +97,10 @@ def main() -> None:
         tags={"script": "eval_generative_models", "task": "benchmark"},
     )
     mlf.log_params(vars(args))
-    np.random.seed(args.seed); torch.manual_seed(args.seed)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     device = choose_device(args.device)
     reference_voxels = None
