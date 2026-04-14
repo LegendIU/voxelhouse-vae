@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -27,12 +28,37 @@ class MlflowLogger:
             print("[WARN] mlflow is not installed; disabling mlflow logging")
             return cls(enabled=False)
 
-        if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment(experiment_name)
-        run = mlflow.start_run(run_name=run_name)
-        if tags:
-            mlflow.set_tags(tags)
+        def _start_with_uri(uri: str | None) -> tuple[Any, str | None]:
+            if uri:
+                mlflow.set_tracking_uri(uri)
+            mlflow.set_experiment(experiment_name)
+            run = mlflow.start_run(run_name=run_name)
+            if tags:
+                mlflow.set_tags(tags)
+            return run, uri
+
+        try:
+            run, effective_uri = _start_with_uri(tracking_uri)
+        except Exception as exc:
+            fallback_uri = (Path.cwd() / "mlruns").resolve().as_uri()
+            can_retry_with_fallback = not tracking_uri
+            if not can_retry_with_fallback:
+                print(f"[WARN] mlflow initialization failed ({exc}); disabling mlflow logging")
+                return cls(enabled=False)
+            try:
+                print(
+                    f"[WARN] mlflow initialization failed ({exc}); "
+                    f"retrying with local tracking uri: {fallback_uri}"
+                )
+                run, effective_uri = _start_with_uri(fallback_uri)
+            except Exception as fallback_exc:
+                print(
+                    f"[WARN] mlflow fallback initialization failed ({fallback_exc}); "
+                    "disabling mlflow logging"
+                )
+                return cls(enabled=False)
+        if effective_uri:
+            print(f"[INFO] mlflow tracking uri: {effective_uri}")
         return cls(enabled=True, run=run, _mlflow=mlflow)
 
     def log_params(self, params: dict[str, Any]) -> None:
