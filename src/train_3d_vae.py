@@ -3,17 +3,22 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import random
 from datetime import datetime, timezone
 
-import numpy as np
 import torch
-from torch.utils.data import DataLoader, get_worker_info
+from torch.utils.data import DataLoader
 
 from dataset import VoxelNPZDataset
 from mlops import MlflowLogger
 from model_3d import VAE3D, kl_divergence
-from utils import ensure_dir, save_json, choose_device, compute_iou, dice_loss_from_logits
+from training_utils import (
+    estimate_pos_weight,
+    make_grad_scaler,
+    save_recon_grid as _save_recon_grid_with_forward,
+    seed_worker,
+    set_global_seed,
+)
+from utils import choose_device, compute_iou, dice_loss_from_logits, ensure_dir, save_json
 
 
 @torch.no_grad()
@@ -23,50 +28,13 @@ def save_recon_grid(
     out_path: str,
     threshold: float = 0.5,
 ) -> bool:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return False
-
     model.eval()
-    x = batch[:8]
-    logits, _, _ = model(x)
-    probs = torch.sigmoid(logits)
 
-    def proj(v: torch.Tensor) -> np.ndarray:
-        v = (v > threshold).float()
-        xy = v.max(dim=4).values.squeeze(1)
-        return xy.cpu().numpy()
+    def forward(x: torch.Tensor) -> torch.Tensor:
+        logits, _, _ = model(x)
+        return logits
 
-    gt = proj(x)
-    rc = proj(probs)
-    bsz = gt.shape[0]
-
-    fig, axes = plt.subplots(2, bsz, figsize=(bsz * 2, 4))
-    if bsz == 1:
-        axes = np.array([[axes[0]], [axes[1]]], dtype=object)
-
-    for i in range(bsz):
-        axes[0, i].imshow(gt[i], cmap="gray")
-        axes[0, i].axis("off")
-        axes[1, i].imshow(rc[i], cmap="gray")
-        axes[1, i].axis("off")
-
-    axes[0, 0].set_title("GT")
-    axes[1, 0].set_title("Recon")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return True
-
-
-def seed_worker(worker_id: int) -> None:
-    worker_seed = torch.initial_seed() % (2**32)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-    info = get_worker_info()
-    if info is not None and hasattr(info.dataset, "rng"):
-        info.dataset.rng = np.random.default_rng(worker_seed)
+    return _save_recon_grid_with_forward(forward, batch, out_path, threshold=threshold)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -94,25 +62,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--early_stopping_patience must be >= 0")
     if args.min_delta < 0:
         raise SystemExit("--min_delta must be >= 0")
-
-
-def estimate_pos_weight(voxels: np.ndarray) -> float:
-    if voxels.size == 0:
-        raise ValueError("Training voxels array is empty")
-    pos = float((voxels > 0).sum())
-    neg = float(voxels.size - pos)
-    if pos <= 0:
-        raise ValueError("Training voxels contain no occupied cells")
-    return min(neg / pos, 1e4)
-
-
-def make_grad_scaler(use_amp: bool):
-    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
-        try:
-            return torch.amp.GradScaler(device="cuda", enabled=use_amp)
-        except TypeError:
-            return torch.amp.GradScaler("cuda", enabled=use_amp)
-    return torch.cuda.amp.GradScaler(enabled=use_amp)
 
 
 def compute_kl_weight(epoch: int, base_kl_weight: float, warmup_epochs: int) -> float:
@@ -182,11 +131,7 @@ def main() -> None:
     args = parser.parse_args()
     validate_args(args)
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+    set_global_seed(args.seed)
 
     device = choose_device(args.device)
     use_amp = bool(args.amp) and (device.type == "cuda")

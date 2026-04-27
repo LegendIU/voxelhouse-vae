@@ -11,15 +11,8 @@ from torch.utils.data import DataLoader
 
 from dataset import VoxelNPZDataset
 from model_3d import VAE3D, kl_divergence
+from model_loading import load_checkpoint
 from utils import choose_device, compute_iou, dice_loss_from_logits
-
-
-def _load_checkpoint(ckpt_path: str) -> dict:
-    try:
-        return torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    except TypeError:
-        # Backward compatibility with older PyTorch versions.
-        return torch.load(ckpt_path, map_location="cpu")
 
 
 def _neighbors_6(z: int, y: int, x: int, d: int, h: int, w: int):
@@ -121,7 +114,7 @@ def main() -> None:
     use_amp = bool(args.amp) and (device.type == "cuda")
     pin_memory = bool(args.pin_memory) or (device.type == "cuda")
 
-    ckpt = _load_checkpoint(args.ckpt)
+    ckpt = load_checkpoint(args.ckpt)
     if "model" not in ckpt:
         raise SystemExit(f"Checkpoint does not contain 'model' weights: {args.ckpt}")
 

@@ -3,12 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import random
 from datetime import datetime, timezone
 
-import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, get_worker_info
+from torch.utils.data import DataLoader, Dataset
 
 from conditioning import gather_condition_ids, infer_condition_vocab_sizes, parse_condition_fields
 from dataset import VoxelNPZDataset
@@ -16,6 +14,7 @@ from latent_transformer import LatentTokenTransformer
 from logging_utils import append_jsonl, build_run_manifest, save_manifest
 from mlops import MlflowLogger
 from model_loading import load_vqvae_model
+from training_utils import make_grad_scaler, seed_worker, set_global_seed
 from utils import choose_device, ensure_dir, save_json
 
 
@@ -28,26 +27,6 @@ class IndexedDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         return self.base[idx], int(idx)
-
-
-def seed_worker(worker_id: int) -> None:
-    worker_seed = torch.initial_seed() % (2**32)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-    info = get_worker_info()
-    if info is not None:
-        base = getattr(info.dataset, "base", None)
-        if base is not None and hasattr(base, "rng"):
-            base.rng = np.random.default_rng(worker_seed)
-
-
-def make_grad_scaler(use_amp: bool):
-    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
-        try:
-            return torch.amp.GradScaler(device="cuda", enabled=use_amp)
-        except TypeError:
-            return torch.amp.GradScaler("cuda", enabled=use_amp)
-    return torch.cuda.amp.GradScaler(enabled=use_amp)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -137,11 +116,7 @@ def main() -> None:
     args = parser.parse_args()
     validate_args(args)
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+    set_global_seed(args.seed)
 
     device = choose_device(args.device)
     use_amp = bool(args.amp) and (device.type == "cuda")

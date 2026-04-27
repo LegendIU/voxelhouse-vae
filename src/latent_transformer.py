@@ -44,15 +44,14 @@ def apply_repetition_penalty(
 ) -> torch.Tensor:
     if generated_tokens is None or generated_tokens.numel() == 0 or penalty <= 1.0:
         return logits
-    adjusted = logits.clone()
-    for row_idx in range(generated_tokens.shape[0]):
-        used = torch.unique(generated_tokens[row_idx].long())
-        if used.numel() == 0:
-            continue
-        row_logits = adjusted[row_idx, used]
-        penalized = torch.where(row_logits >= 0.0, row_logits / penalty, row_logits * penalty)
-        adjusted[row_idx, used] = penalized
-    return adjusted
+    if generated_tokens.shape[0] != logits.shape[0]:
+        raise ValueError(
+            f"generated_tokens batch ({generated_tokens.shape[0]}) must match logits batch ({logits.shape[0]})"
+        )
+    used_mask = torch.zeros_like(logits, dtype=torch.bool)
+    used_mask.scatter_(1, generated_tokens.long(), True)
+    penalized = torch.where(logits >= 0.0, logits / penalty, logits * penalty)
+    return torch.where(used_mask, penalized, logits)
 
 
 def sample_from_logits(
@@ -184,6 +183,69 @@ class LatentTokenTransformer(nn.Module):
         h = self.transformer(h, mask=self._causal_mask(seq_len, embeddings.device))
         return self.final_norm(h)
 
+    @staticmethod
+    def _layer_qkv(layer: nn.TransformerEncoderLayer, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        attn = layer.self_attn
+        qkv = F.linear(x, attn.in_proj_weight, attn.in_proj_bias)
+        return qkv.chunk(3, dim=-1)
+
+    @staticmethod
+    def _split_heads(t: torch.Tensor, num_heads: int) -> torch.Tensor:
+        b, n, d = t.shape
+        head_dim = d // num_heads
+        return t.view(b, n, num_heads, head_dim).transpose(1, 2)
+
+    @staticmethod
+    def _merge_heads(t: torch.Tensor) -> torch.Tensor:
+        b, h, n, hd = t.shape
+        return t.transpose(1, 2).contiguous().view(b, n, h * hd)
+
+    def _layer_ff(self, layer: nn.TransformerEncoderLayer, x: torch.Tensor) -> torch.Tensor:
+        return layer.linear2(layer.activation(layer.linear1(x)))
+
+    def _build_prefix_cache(
+        self,
+        prefix_embeddings: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        # Run a single parallel forward through every layer using a causal mask, while
+        # extracting per-layer K/V tensors so subsequent steps can reuse them.
+        h = prefix_embeddings
+        cache: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for layer in self.transformer.layers:
+            attn = layer.self_attn
+            q, k, v = self._layer_qkv(layer, h)
+            q = self._split_heads(q, attn.num_heads)
+            k = self._split_heads(k, attn.num_heads)
+            v = self._split_heads(v, attn.num_heads)
+            attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
+            attn_out = attn.out_proj(self._merge_heads(attn_out))
+            h = layer.norm1(h + attn_out)
+            h = layer.norm2(h + self._layer_ff(layer, h))
+            cache.append((k, v))
+        return h, cache
+
+    def _step_with_cache(
+        self,
+        token_embedding: torch.Tensor,
+        cache: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        h = token_embedding
+        new_cache: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for layer, (k_past, v_past) in zip(self.transformer.layers, cache):
+            attn = layer.self_attn
+            q, k_new, v_new = self._layer_qkv(layer, h)
+            q = self._split_heads(q, attn.num_heads)
+            k_new = self._split_heads(k_new, attn.num_heads)
+            v_new = self._split_heads(v_new, attn.num_heads)
+            k = torch.cat([k_past, k_new], dim=2)
+            v = torch.cat([v_past, v_new], dim=2)
+            attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+            attn_out = attn.out_proj(self._merge_heads(attn_out))
+            h = layer.norm1(h + attn_out)
+            h = layer.norm2(h + self._layer_ff(layer, h))
+            new_cache.append((k, v))
+        return h, new_cache
+
     def forward(self, token_ids: torch.Tensor, condition_ids: torch.Tensor | None = None) -> torch.Tensor:
         if token_ids.ndim != 2:
             raise ValueError(f"Expected token_ids with shape [B,L], got {tuple(token_ids.shape)}")
@@ -275,11 +337,18 @@ class LatentTokenTransformer(nn.Module):
                     f"condition_ids batch size must match n_samples={n_samples}, got {condition_ids.shape[0]}"
                 )
 
+        prefix_embeddings = self._build_prefix(n_samples, device, condition_ids)
+        prefix_positions = torch.arange(self.prefix_length, device=device)
+        prefix_embeddings = prefix_embeddings + self.position_embedding(prefix_positions).unsqueeze(0)
+
+        prefix_hidden, cache = self._build_prefix_cache(prefix_embeddings)
+        last_hidden = self.final_norm(prefix_hidden[:, -1:, :])
         tokens = torch.empty(n_samples, self.num_latent_tokens, dtype=torch.long, device=device)
+
         for step in range(self.num_latent_tokens):
+            logits = self.output_head(last_hidden.squeeze(1))
             prefix_tokens = tokens[:, :step] if step > 0 else None
-            logits = self.next_token_logits(tokens[:, :step], condition_ids=condition_ids)
-            tokens[:, step] = sample_from_logits(
+            sampled = sample_from_logits(
                 logits,
                 greedy=greedy,
                 temperature=temperature,
@@ -288,6 +357,16 @@ class LatentTokenTransformer(nn.Module):
                 generated_tokens=prefix_tokens,
                 repetition_penalty=repetition_penalty,
             )
+            tokens[:, step] = sampled
+            if step + 1 == self.num_latent_tokens:
+                break
+            next_pos = self.prefix_length + step
+            next_embedding = self.token_embedding(sampled).unsqueeze(1)
+            next_embedding = next_embedding + self.position_embedding(
+                torch.tensor([next_pos], device=device)
+            ).unsqueeze(0)
+            hidden, cache = self._step_with_cache(next_embedding, cache)
+            last_hidden = self.final_norm(hidden)
         return tokens
 
     def sample_token_grid(

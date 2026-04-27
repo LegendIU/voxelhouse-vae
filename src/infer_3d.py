@@ -9,20 +9,13 @@ import numpy as np
 import torch
 
 from model_3d import VAE3D
+from model_loading import load_checkpoint
 from utils import choose_device
 
 if TYPE_CHECKING:
     from PIL import Image
 
 _MESH_EXPORT_WARNED = False
-
-
-def _load_checkpoint(ckpt_path: str) -> dict:
-    try:
-        return torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    except TypeError:
-        # Backward compatibility with older PyTorch versions.
-        return torch.load(ckpt_path, map_location="cpu")
 
 
 def mc_vertices_faces(occ: np.ndarray):
@@ -224,7 +217,7 @@ def main():
 
     device = choose_device(args.device)
 
-    ckpt = _load_checkpoint(args.ckpt)
+    ckpt = load_checkpoint(args.ckpt)
     cfg = ckpt.get("config", {})
 
     resolution = int(cfg.get("resolution", 64))

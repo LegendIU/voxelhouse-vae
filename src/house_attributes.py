@@ -73,7 +73,8 @@ def extract_house_attribute_ids(
     # 0 = flat-like, 1 = sloped, 2 = peaked.
     top_idx = torch.argmax(torch.flip(z_profile, dims=[1]), dim=1)
     top_z = (resolution - 1 - top_idx).long()
-    roof_slice = torch.stack([occ_f[i, :, :, top_z[i]] for i in range(occ.shape[0])], dim=0)
+    gather_idx = top_z.view(-1, 1, 1, 1).expand(-1, occ_f.shape[1], occ_f.shape[2], 1)
+    roof_slice = torch.gather(occ_f, dim=3, index=gather_idx).squeeze(-1)
     roof_coverage = roof_slice.mean(dim=(1, 2))
     roof_height_center = (z_profile * torch.arange(resolution, device=voxels.device).float()).sum(dim=1) / active_levels.clamp_min(1.0)
     roof_sharpness = top_z.float() - roof_height_center
