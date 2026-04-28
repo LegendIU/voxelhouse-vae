@@ -403,7 +403,7 @@ def main() -> None:
                 best_val_iou=best_val_iou,
             )
 
-        if epoch % args.save_every == 0 or epoch == 1 or epoch == args.epochs or improved_iou:
+        if epoch % args.save_every == 0 or epoch == 1 or epoch == args.epochs:
             if preview_batch is not None:
                 saved = save_recon_grid(
                     model,

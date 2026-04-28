@@ -5,6 +5,7 @@
 /outputs/
 /mlruns/
 /out_smoke_mlops/
+/logs/
 
 # Python virtual environment
 /.venv/

@@ -16,18 +16,17 @@ def ensure_dir(path: str) -> None:
 
 
 def export_obj(out_path: str) -> None:
-    # Blender 5 renamed enum "-Z" to "NEGATIVE_Z". Keep compatibility.
-    kwargs = dict(
-        filepath=out_path,
-        use_selection=False,
-        use_mesh_modifiers=True,
-        use_materials=False,
-    )
-    try:
-        bpy.ops.wm.obj_export(**kwargs, forward_axis="NEGATIVE_Z", up_axis="Y")
-    except TypeError:
-        bpy.ops.wm.obj_export(**kwargs, forward_axis="-Z", up_axis="Y")
-    except AttributeError:
+    if hasattr(bpy.ops.wm, "obj_export"):
+        # Blender 4/5 OBJ exporter uses renamed axis enums and a smaller
+        # argument surface than the legacy export_scene operator.
+        bpy.ops.wm.obj_export(
+            filepath=out_path,
+            export_selected_objects=False,
+            export_materials=False,
+            forward_axis="NEGATIVE_Z",
+            up_axis="Y",
+        )
+    else:
         bpy.ops.export_scene.obj(
             filepath=out_path,
             use_selection=False,
